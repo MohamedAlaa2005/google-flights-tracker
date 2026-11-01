@@ -1,0 +1,6 @@
+{
+  "name": "Hopper Flight Price Scraper & Intelligence Tracker",
+  "description": "Automated flight price scraping, historical trend tracking, and Supabase synchronization for top 250 global routes across One-Way and Round-Trip trips.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

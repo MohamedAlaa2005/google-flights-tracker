@@ -1,0 +1,13 @@
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.git
+.github
+chrome_profile
+data2
+*.png
+*.jpg
+*.log
+scratch_*
+

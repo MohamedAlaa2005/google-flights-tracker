@@ -1,0 +1,20 @@
+{
+  "manifest_version": 3,
+  "name": "Hopper Flight Scraper & Supabase Sync",
+  "version": "1.0.0",
+  "description": "Extracts real flight prices, ratings, and airlines from Hopper and syncs them to Supabase in 1 click.",
+  "permissions": ["activeTab"],
+  "host_permissions": [
+    "https://hopper.com/*",
+    "http://localhost:3000/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://hopper.com/*"],
+      "js": ["content.js"],
+      "css": ["styles.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}
+
