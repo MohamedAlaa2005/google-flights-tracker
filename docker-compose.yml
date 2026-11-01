@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  flight-tracker:
+    build: .
+    container_name: flight-tracker
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    environment:
+      - PORT=3000
+      - HEADLESS=true
+      - CHROME_DEBUG_PORT=9222
+      - CHROME_PROFILE_DIR=/app/chrome_profile
+    volumes:
+      - ./chrome_profile:/app/chrome_profile
+      - ./routes.json:/app/routes.json
+    shm_size: '2gb'
+
