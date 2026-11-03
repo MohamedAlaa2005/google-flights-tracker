@@ -186,6 +186,14 @@ def parse_flight_text(text: str, flight_date_str: str) -> Optional[Dict]:
         dep24, arr24 = dep, arr
         arr_date = flight_date_str
 
+    is_self_transfer = bool(
+        "self transfer" in text.lower() or
+        "self-transfer" in text.lower() or
+        "self transfer" in airline.lower() or
+        "self-transfer" in airline.lower() or
+        "separate tickets" in text.lower()
+    )
+
     return {
         "dep_time": dep24,
         "arr_time": arr24,
@@ -193,6 +201,7 @@ def parse_flight_text(text: str, flight_date_str: str) -> Optional[Dict]:
         "dep_datetime": f"{flight_date_str} {dep24}",
         "arr_datetime": f"{arr_date} {arr24}",
         "airline": airline,
+        "is_self_transfer": is_self_transfer,
         "duration_min": duration,
         "stops": stops,
         "layover": layover or "",
@@ -507,6 +516,7 @@ def _scrape_worker_chunk(
                         "stops": stops_label,
                         "stop_count": stops_count,
                         "stop_details": best.get("layover") or ("Direct Nonstop Flight" if stops_count == 0 else f"{stops_count} stop(s)"),
+                        "is_self_transfer": best.get("is_self_transfer", False),
                         "departure_time": best["dep_time"],
                         "arrival_time": best["arr_time"],
                         "total_time": total_time_str,

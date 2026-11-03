@@ -508,6 +508,7 @@ HTML_CONTENT = """<!DOCTYPE html>
               <th class="px-4 py-3">Cheapest Airline</th>
               <th class="px-4 py-3">Flight & Schedule</th>
               <th class="px-4 py-3">Stops & Duration</th>
+              <th class="px-3 py-3 text-center whitespace-nowrap">Self Transfer</th>
               <th class="px-4 py-3">Lowest Fare</th>
               <th class="px-3 py-3 whitespace-nowrap">Typical Range</th>
               <th class="px-3 py-3">Daily Delta</th>
@@ -660,6 +661,17 @@ HTML_CONTENT = """<!DOCTYPE html>
                   ${f.stops || 'Direct'}
                 </span>
                 <span class="block text-[10px] text-slate-400 mt-0.5">${f.total_time || ''}</span>
+              </td>
+              <td class="px-3 py-3 text-center whitespace-nowrap">
+                ${f.is_self_transfer ? `
+                  <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-amber-100 text-amber-800 border border-amber-300" title="Self-transfer: Separate tickets booked together">
+                    ⚠️ Yes
+                  </span>
+                ` : `
+                  <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-slate-100 text-slate-500 border border-slate-200">
+                    No
+                  </span>
+                `}
               </td>
               <td class="px-4 py-3 whitespace-nowrap">
                 <span class="text-sm font-extrabold ${isCheapestRow ? 'text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-lg' : 'text-emerald-600'}">$${price}</span>
@@ -935,10 +947,10 @@ HTML_CONTENT = """<!DOCTYPE html>
     function exportTableToCSV() {
       const rows = document.querySelectorAll('#flights-table-body tr');
       if (!rows.length) return alert('No flights to export');
-      let csv = 'date,day_of_week,days_before,route,airline,schedule,stops,price_usd,typical_range,daily_delta,price_label_insights\\n';
+      let csv = 'date,day_of_week,days_before,route,airline,schedule,stops,is_self_transfer,price_usd,typical_range,daily_delta,price_label_insights\\n';
       rows.forEach(tr => {
         const cols = tr.querySelectorAll('td');
-        if (cols.length >= 11) {
+        if (cols.length >= 12) {
           const date = cols[0].innerText.replace('📅', '').trim();
           const day = cols[1].innerText.trim();
           const daysBefore = cols[2].innerText.replace('+', '').replace('d', '').trim();
@@ -946,11 +958,12 @@ HTML_CONTENT = """<!DOCTYPE html>
           const airline = cols[4].innerText.trim();
           const sched = cols[5].innerText.trim();
           const stops = cols[6].innerText.replace(/\\n/g, ' ').trim();
-          const price = cols[7].innerText.replace('$', '').replace(/\\n/g, ' ').trim();
-          const range = cols[8].innerText.trim();
-          const delta = cols[9].innerText.replace(/[^0-9.-]/g, '').trim() || '0';
-          const insights = cols[10].innerText.replace(/\\n/g, ' | ').replace(/\"/g, '""').trim();
-          csv += `"${date}","${day}","${daysBefore}","${route}","${airline}","${sched}","${stops}","${price}","${range}","${delta}","${insights}"\\n`;
+          const isSelfTransfer = cols[7].innerText.includes('Yes') ? 'TRUE' : 'FALSE';
+          const price = cols[8].innerText.replace('$', '').replace(/\\n/g, ' ').trim();
+          const range = cols[9].innerText.trim();
+          const delta = cols[10].innerText.replace(/[^0-9.-]/g, '').trim() || '0';
+          const insights = cols[11].innerText.replace(/\\n/g, ' | ').replace(/\"/g, '""').trim();
+          csv += `"${date}","${day}","${daysBefore}","${route}","${airline}","${sched}","${stops}","${isSelfTransfer}","${price}","${range}","${delta}","${insights}"\\n`;
         }
       });
       const blob = new Blob([csv], { type: 'text/csv' });
