@@ -50,8 +50,15 @@ CACHE_LOCK = threading.Lock()
 
 def find_chrome():
     for path in CHROME_CANDIDATES:
-        if os.path.exists(path):
+        if path and os.path.exists(path):
             return path
+    try:
+        with sync_playwright() as p:
+            pw_path = p.chromium.executable_path
+            if pw_path and os.path.exists(pw_path):
+                return pw_path
+    except Exception:
+        pass
     return None
 
 
