@@ -12,7 +12,7 @@ ONE_WAY_USER = os.getenv("SUPABASE_ONE_WAY_USER", "postgres.uopbpkiogtspjwiyiaxe
 ROUND_TRIP_USER = os.getenv("SUPABASE_ROUND_TRIP_USER", "postgres.afqmwnbuvsothamcbdpv")
 PORT = 6543
 
-def get_connection(trip_type: str = "one-way"):
+def get_connection(trip_type: str = "round-trip"):
     user = ROUND_TRIP_USER if trip_type == "round-trip" else ONE_WAY_USER
     return psycopg2.connect(
         host=HOST,
@@ -151,7 +151,7 @@ def init_tables():
         except Exception as e:
             print(f"[Supabase DB] Error initializing {table}: {e}")
 
-def save_flight(flight: dict, trip_type: str = "one-way"):
+def save_flight(flight: dict, trip_type: str = "round-trip"):
     """Upserts the cheapest verified flight record into Supabase."""
     table = "round_trip_flights" if trip_type == "round-trip" else "one_way_flights"
     conn = get_connection(trip_type)
@@ -333,7 +333,7 @@ def save_flight(flight: dict, trip_type: str = "one-way"):
     finally:
         conn.close()
 
-def get_flights(trip_type: str = "one-way", limit: int = 250):
+def get_flights(trip_type: str = "round-trip", limit: int = 250):
     table = "round_trip_flights" if trip_type == "round-trip" else "one_way_flights"
     conn = get_connection(trip_type)
     try:
@@ -345,7 +345,7 @@ def get_flights(trip_type: str = "one-way", limit: int = 250):
     finally:
         conn.close()
 
-def clear_flights(trip_type: str = "one-way"):
+def clear_flights(trip_type: str = "round-trip"):
     table = "round_trip_flights" if trip_type == "round-trip" else "one_way_flights"
     conn = get_connection(trip_type)
     try:
