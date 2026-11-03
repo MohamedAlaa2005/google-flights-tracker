@@ -17,6 +17,8 @@ from routes import TOP_250_ROUTES, get_route
 
 sys.stdout.reconfigure(encoding='utf-8')
 
+IS_VERCEL = bool(os.getenv("VERCEL"))
+
 app = FastAPI(title="Google Flights Intelligence Tracker", version="3.0.0")
 
 app.add_middleware(
@@ -27,11 +29,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize Supabase tables
-database.init_tables()
+# Initialize Supabase tables safely
+try:
+    database.init_tables()
+except Exception as e:
+    print(f"[Supabase DB] Table initialization deferred: {e}")
 
-# Start background 12:00 PM daily scheduler
-scheduler_instance.start()
+# Start background 12:00 PM daily scheduler only in persistent server mode (not on serverless)
+if not IS_VERCEL:
+    scheduler_instance.start()
 
 # In-memory scraper status log
 scrape_logs = []
@@ -153,6 +159,13 @@ def scrape_single_flight(req: SingleScrapeRequest):
 
 def _run_30_days_task(origin: str, destination: str, start_date: str, currency: str, adults: int):
     global current_scrape_state
+    if IS_VERCEL:
+        add_log("Vercel Serverless Mode: Live Supabase database and queries are fully active.", "info")
+        add_log("Notice: Playwright Chrome automation requires local execution (python run_250_routes.py) or Docker.", "warn")
+        current_scrape_state["is_running"] = False
+        current_scrape_state["mode"] = "idle"
+        return
+
     current_scrape_state["is_running"] = True
     current_scrape_state["mode"] = "30-days"
     current_scrape_state["route"] = f"{origin}-{destination}"
@@ -203,6 +216,13 @@ def scrape_30_days(req: RangeScrapeRequest, bg: BackgroundTasks):
 
 def _run_250_routes_task(currency: str, adults: int):
     global current_scrape_state
+    if IS_VERCEL:
+        add_log("Vercel Serverless Mode: Live Supabase database and queries are fully active.", "info")
+        add_log("Notice: Full 250 routes batch scan requires local execution (python run_250_routes.py) or Docker.", "warn")
+        current_scrape_state["is_running"] = False
+        current_scrape_state["mode"] = "idle"
+        return
+
     current_scrape_state["is_running"] = True
     current_scrape_state["mode"] = "250-routes"
     add_log("Starting Global 250 Routes Batch Scan across 30 days...", "info")

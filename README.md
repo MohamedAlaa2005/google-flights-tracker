@@ -54,7 +54,20 @@ python run_250_routes.py
 python run_250_routes.py --limit 5
 ```
 
-### 5. Run with Docker
+### 5. Deploy to Vercel (Cloud Dashboard)
+
+The project is pre-configured for Vercel deployment (`vercel.json` + `api/index.py`):
+1. Push this repository to your GitHub account.
+2. Go to [Vercel](https://vercel.com) and click **"Add New Project"**.
+3. Import your `google-flights-tracker` repository.
+4. (Optional) In **Environment Variables**, add:
+   - `SUPABASE_PASSWORD`
+   - `SUPABASE_ONE_WAY_USER`
+   - `SUPABASE_POOLER_HOST`
+5. Click **Deploy**. Your dashboard will be live at `https://<your-project>.vercel.app` with real-time Supabase flight queries, search, filtering, and CSV export!
+
+### 6. Run with Docker (Full Scraper & Dashboard)
 ```bash
 docker compose up -d
 ```
+
