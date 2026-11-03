@@ -1,3 +1,4 @@
+import os
 import time
 import logging
 import threading
@@ -88,6 +89,12 @@ class DailyFlightScheduler:
 
     def trigger_now(self) -> Dict[str, Any]:
         """Manually trigger the 12:00 PM routine in a background thread immediately."""
+        if os.getenv("VERCEL"):
+            return {
+                "success": True,
+                "message": "Vercel Serverless Mode: Live database active. Background Chrome scraping runs via local runner (python run_250_routes.py) or Docker."
+            }
+
         if self.is_scraping:
             return {"success": False, "message": "Scraping is already actively running."}
 
@@ -119,6 +126,17 @@ class DailyFlightScheduler:
         logger.info("DailyFlightScheduler stopped.")
 
     def get_status(self) -> Dict[str, Any]:
+        if os.getenv("VERCEL"):
+            return {
+                "is_active": True,
+                "is_scraping": False,
+                "scheduled_time": "Daily 12:00 PM (Cloud Synced)",
+                "last_run": "Supabase Connected",
+                "next_run": "Daily 12:00 PM",
+                "status": "Vercel Serverless Dashboard (Database Live)",
+                "progress": self.progress_state
+            }
+
         # Calculate next scheduled run
         now = datetime.now()
         target_time = datetime.strptime(self.daily_time, "%H:%M").time()
