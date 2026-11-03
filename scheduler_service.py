@@ -21,6 +21,7 @@ class DailyFlightScheduler:
         self.last_status: str = "Idle"
         self.thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
+        self.log_callback: Optional[Callable[[str, str], None]] = None
         self.progress_state = {
             "current_route": None,
             "route_index": 0,
@@ -31,6 +32,14 @@ class DailyFlightScheduler:
             "total_saved": 0
         }
 
+    def _log(self, msg: str, status_type: str = "info"):
+        logger.info(msg)
+        if self.log_callback:
+            try:
+                self.log_callback(msg, status_type)
+            except Exception:
+                pass
+
     def _job_wrapper(self):
         """Executed automatically every day at 12:00 PM or triggered manually."""
         if self.is_scraping:
@@ -40,7 +49,7 @@ class DailyFlightScheduler:
         self.is_scraping = True
         self.last_run = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self.last_status = "Running"
-        logger.info(f"==> Daily Flight Scraper Job Started at {self.last_run} <==")
+        self._log(f"==> Daily Flight Scraper Job Started at {self.last_run} <==", "info")
 
         try:
             total_saved = 0
@@ -49,7 +58,7 @@ class DailyFlightScheduler:
 
             for idx, route in enumerate(TOP_250_ROUTES):
                 if self._stop_event.is_set():
-                    logger.info("Scheduler execution stopped.")
+                    self._log("Scheduler execution stopped.", "warn")
                     break
 
                 orig = route["origin"]
@@ -57,6 +66,7 @@ class DailyFlightScheduler:
                 route_key = f"{orig}-{dest}"
                 self.progress_state["current_route"] = route_key
                 self.progress_state["route_index"] = idx + 1
+                self._log(f"[{idx+1}/{total_routes}] Scanning {route_key} across 30 days (3 parallel workers)...", "info")
 
                 def _day_progress(cur_day, tot_days, flight_data):
                     self.progress_state["current_day"] = cur_day
@@ -67,6 +77,7 @@ class DailyFlightScheduler:
                             "price": flight_data["current_lowest_price"],
                             "airline": flight_data["airline"]
                         }
+                        self._log(f"[{idx+1}/{total_routes}] {route_key} Day {cur_day}/30: ${flight_data['current_lowest_price']} ({flight_data.get('airline', 'Flight')})", "info")
 
                 results = google_flights_engine.scrape_30_days_range(
                     origin=orig,
@@ -79,11 +90,11 @@ class DailyFlightScheduler:
                 self.progress_state["total_saved"] = total_saved
 
             self.last_status = f"Completed successfully. Saved/updated {total_saved} cheapest flights in Supabase."
-            logger.info(f"==> Daily Flight Scraper Completed. Total saved: {total_saved} <==")
+            self._log(f"==> Daily Flight Scraper Completed. Total saved: {total_saved} <==", "success")
 
         except Exception as e:
             self.last_status = f"Error: {str(e)}"
-            logger.error(f"Scheduler job encountered an error: {e}")
+            self._log(f"Scheduler job encountered an error: {e}", "error")
         finally:
             self.is_scraping = False
 

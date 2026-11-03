@@ -48,6 +48,9 @@ def add_log(msg: str, status_type: str = "info"):
     if len(scrape_logs) > 60:
         scrape_logs.pop()
 
+# Wire scheduler logs to web_app live log console
+scheduler_instance.log_callback = add_log
+
 # Global state for interactive scraping progress
 current_scrape_state = {
     "is_running": False,
@@ -793,14 +796,35 @@ HTML_CONTENT = """<!DOCTYPE html>
             document.getElementById('stat-next-run').innerText = `Next: ${sched.next_run.split(' ')[1] || '12:00:00'}`;
           }
 
-          if (p.is_running) {
+          const isRunning = p.is_running || (sched && sched.is_scraping);
+          if (isRunning) {
             showProgress(true);
-            const pct = Math.round((p.current_day / p.total_days) * 100) || 1;
+            let pct = 1;
+            let statusText = '';
+            let subText = '';
+
+            if (p.is_running) {
+              pct = Math.round((p.current_day / p.total_days) * 100) || 1;
+              statusText = `Scraping ${p.route}: Day ${p.current_day} of ${p.total_days}`;
+              if (p.latest_flight) {
+                subText = `Found: $${p.latest_flight.current_lowest_price} on ${p.latest_flight.airline} (${p.latest_flight.stops})`;
+              }
+            } else if (sched && sched.is_scraping) {
+              const rIdx = sched.progress.route_index || 1;
+              const totR = sched.progress.total_routes || 250;
+              const curD = sched.progress.current_day || 1;
+              pct = Math.round((rIdx / totR) * 100) || 1;
+              statusText = `12:00 PM Trigger: [${rIdx}/${totR}] ${sched.progress.current_route || 'Routes'}: Day ${curD}/30`;
+              if (sched.progress.latest_cheapest) {
+                subText = `Found: $${sched.progress.latest_cheapest.price} on ${sched.progress.latest_cheapest.airline}`;
+              }
+            }
+
             document.getElementById('progress-bar-fill').style.width = `${pct}%`;
             document.getElementById('progress-percent-text').innerText = `${pct}%`;
-            document.getElementById('progress-status-text').innerText = `Scraping ${p.route}: Day ${p.current_day} of ${p.total_days}`;
-            if (p.latest_flight) {
-              document.getElementById('progress-sub-text').innerText = `Found: $${p.latest_flight.current_lowest_price} on ${p.latest_flight.airline} (${p.latest_flight.stops})`;
+            document.getElementById('progress-status-text').innerText = statusText;
+            if (subText) {
+              document.getElementById('progress-sub-text').innerText = subText;
             }
           } else {
             // Finished
