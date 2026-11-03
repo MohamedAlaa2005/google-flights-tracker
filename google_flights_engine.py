@@ -844,71 +844,109 @@ def _scrape_round_trip_worker_chunk(
                     flight_price = None
 
                 if flight_price is not None:
-                    eval_insights = evaluate_price_against_range(flight_price, insights)
                     days_before = max(0, (dep_dt - date.today()).days)
                     day_of_week = dep_dt.strftime("%A")
 
-                    record = {
-                        "id": f"GF_RT_{origin}_{destination}_{dep_date_str}_{best_ret_date}",
-                        "trip_type": "round-trip",
-                        "leaving": f"{route_info.get('originCity', origin)} ({origin})",
-                        "origin_code": origin,
-                        "origin_city": route_info.get("originCity", origin),
-                        "origin_country": route_info.get("originCountry", "International"),
-                        "departure_airport": origin,
-                        "departure_airport_name": f"{origin} International Airport",
-                        "going": f"{route_info.get('destinationCity', destination)} ({destination})",
-                        "destination_code": destination,
-                        "destination_city": route_info.get("destinationCity", destination),
-                        "destination_country": route_info.get("destinationCountry", "International"),
-                        "arrival_airport": destination,
-                        "arrival_airport_name": f"{destination} Airport",
-                        "date": dep_date_str,
-                        "departure_date": dep_date_str,
-                        "return_date": best_ret_date,
-                        "current_lowest_price": flight_price,
-                        "currency": currency,
-                        "price_labels": eval_insights["price_labels"],
-                        "price_rating": eval_insights["price_rating"],
-                        "prediction_advice": eval_insights["prediction_advice"],
-                        "typical_price_min": eval_insights.get("typical_min"),
-                        "typical_price_max": eval_insights.get("typical_max"),
-                        "typical_price_range": eval_insights.get("typical_range", ""),
-                        "economy_price": flight_price,
-                        "business_price": None,
-                        "airline": airline,
-                        "airline_code": airline[:2].upper(),
-                        "airline_logo": f"https://www.gstatic.com/flights/airline_logos/70px/{airline[:2].upper()}.png",
-                        "stops": stops_label,
-                        "stop_count": stops_count,
-                        "stop_details": stop_details,
-                        "is_self_transfer": is_self_transfer,
-                        "departure_time": dep_time,
-                        "arrival_time": arr_time,
-                        "total_time": total_time_str,
-                        "duration_minutes": duration_min,
-                        "days_until_flight": days_before,
-                        "days_before": days_before,
-                        "day_of_week": day_of_week,
-                        "daily_delta": 0.0,
-                        "airport": f"{origin} - {destination}",
-                        "source_url": target_url,
-                        "adults": 1
-                    }
+                    # If date_prices found for window, save ALL return dates (1 to return_window_days)
+                    # so the departure day is repeated for every return option!
+                    if not date_prices:
+                        date_prices = {best_ret_date: int(flight_price)}
 
-                    if save_to_supabase:
-                        try:
-                            database.save_flight(record, trip_type="round-trip")
-                            record["saved_to_db"] = True
-                        except Exception as db_err:
-                            logger.error(f"Failed to save RT {record['id']} to Supabase: {db_err}")
-                            record["saved_to_db"] = False
+                    saved_count_for_day = 0
+                    for ret_d in window_dates:
+                        if ret_d not in date_prices:
+                            continue
+                        ret_p = float(date_prices[ret_d])
+                        eval_insights = evaluate_price_against_range(ret_p, insights)
+                        ret_url = (
+                            "https://www.google.com/travel/flights"
+                            f"?q=Flights%20to%20{destination}%20from%20{origin}%20from%20{dep_date_str}%20to%20{ret_d}"
+                            f"&curr={currency}&hl=en&gl=eg"
+                        )
 
-                    worker_results.append(record)
+                        if ret_d == best_ret_date:
+                            card_airline = airline
+                            card_stops = stops_label
+                            card_stop_count = stops_count
+                            card_details = stop_details
+                            card_st = is_self_transfer
+                            card_dep = dep_time
+                            card_arr = arr_time
+                            card_tot = total_time_str
+                            card_dur = duration_min
+                        else:
+                            card_airline = airline if airline != "Multiple Airlines" else "Google Flights"
+                            card_stops = stops_label
+                            card_stop_count = stops_count
+                            card_details = f"Round trip returning {ret_d}"
+                            card_st = is_self_transfer
+                            card_dep = dep_time
+                            card_arr = arr_time
+                            card_tot = total_time_str
+                            card_dur = duration_min
+
+                        record = {
+                            "id": f"GF_RT_{origin}_{destination}_{dep_date_str}_{ret_d}",
+                            "trip_type": "round-trip",
+                            "leaving": f"{route_info.get('originCity', origin)} ({origin})",
+                            "origin_code": origin,
+                            "origin_city": route_info.get("originCity", origin),
+                            "origin_country": route_info.get("originCountry", "International"),
+                            "departure_airport": origin,
+                            "departure_airport_name": f"{origin} International Airport",
+                            "going": f"{route_info.get('destinationCity', destination)} ({destination})",
+                            "destination_code": destination,
+                            "destination_city": route_info.get("destinationCity", destination),
+                            "destination_country": route_info.get("destinationCountry", "International"),
+                            "arrival_airport": destination,
+                            "arrival_airport_name": f"{destination} Airport",
+                            "date": dep_date_str,
+                            "departure_date": dep_date_str,
+                            "return_date": ret_d,
+                            "current_lowest_price": ret_p,
+                            "currency": currency,
+                            "price_labels": eval_insights["price_labels"],
+                            "price_rating": eval_insights["price_rating"],
+                            "prediction_advice": eval_insights["prediction_advice"],
+                            "typical_price_min": eval_insights.get("typical_min"),
+                            "typical_price_max": eval_insights.get("typical_max"),
+                            "typical_price_range": eval_insights.get("typical_range", ""),
+                            "economy_price": ret_p,
+                            "business_price": None,
+                            "airline": card_airline,
+                            "airline_code": card_airline[:2].upper() if card_airline else "GF",
+                            "airline_logo": f"https://www.gstatic.com/flights/airline_logos/70px/{card_airline[:2].upper()}.png" if card_airline else "",
+                            "stops": card_stops,
+                            "stop_count": card_stop_count,
+                            "stop_details": card_details,
+                            "is_self_transfer": card_st,
+                            "departure_time": card_dep,
+                            "arrival_time": card_arr,
+                            "total_time": card_tot,
+                            "duration_minutes": card_dur,
+                            "days_until_flight": days_before,
+                            "days_before": days_before,
+                            "day_of_week": day_of_week,
+                            "daily_delta": 0.0,
+                            "airport": f"{origin} - {destination}",
+                            "source_url": ret_url,
+                            "adults": 1
+                        }
+
+                        if save_to_supabase:
+                            try:
+                                database.save_flight(record, trip_type="round-trip")
+                                record["saved_to_db"] = True
+                            except Exception as db_err:
+                                logger.error(f"Failed to save RT {record['id']} to Supabase: {db_err}")
+                                record["saved_to_db"] = False
+
+                        worker_results.append(record)
+                        saved_count_for_day += 1
+
                     logger.info(
-                        f"[RT Worker {worker_id}] [OK] [{dep_date_str} -> {best_ret_date}] "
-                        f"Cheapest: ${record['current_lowest_price']} on {record['airline']} ({record['stops']}) "
-                        f"| SelfTransfer: {record['is_self_transfer']} | {record['price_rating'].upper()}"
+                        f"[RT Worker {worker_id}] [OK] Dep {dep_date_str}: Saved {saved_count_for_day} return options "
+                        f"(Cheapest: ${date_prices.get(best_ret_date)} on {best_ret_date}) | Airline: {airline}"
                     )
 
                     with prog_lock:
