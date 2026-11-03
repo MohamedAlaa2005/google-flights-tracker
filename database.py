@@ -84,6 +84,17 @@ def init_tables():
             cur.execute(f"ALTER TABLE public.{table} ADD COLUMN IF NOT EXISTS typical_price_min NUMERIC(10, 2);")
             cur.execute(f"ALTER TABLE public.{table} ADD COLUMN IF NOT EXISTS typical_price_max NUMERIC(10, 2);")
             cur.execute(f"ALTER TABLE public.{table} ADD COLUMN IF NOT EXISTS typical_price_range VARCHAR(50);")
+            cur.execute(f"ALTER TABLE public.{table} ADD COLUMN IF NOT EXISTS is_self_transfer BOOLEAN DEFAULT FALSE;")
+
+            # Backfill any flights with self transfer in airline or details
+            cur.execute(f"""
+                UPDATE public.{table}
+                SET is_self_transfer = TRUE
+                WHERE airline ILIKE '%self transfer%'
+                   OR airline ILIKE '%self-transfer%'
+                   OR stop_details ILIKE '%self transfer%'
+                   OR stop_details ILIKE '%self-transfer%';
+            """)
 
             # Backfill any null or Unknown day_of_week / days_before
             cur.execute(f"""
@@ -193,6 +204,16 @@ def save_flight(flight: dict, trip_type: str = "one-way"):
         flight["typical_price_max"] = t_max
         flight["typical_price_range"] = t_range
 
+        # Check is_self_transfer
+        is_st = bool(
+            flight.get("is_self_transfer") or
+            "self transfer" in str(flight.get("airline", "")).lower() or
+            "self-transfer" in str(flight.get("airline", "")).lower() or
+            "self transfer" in str(flight.get("stop_details", "")).lower() or
+            "self-transfer" in str(flight.get("stop_details", "")).lower()
+        )
+        flight["is_self_transfer"] = is_st
+
         # 2. Upsert flight
         sql = f"""
             INSERT INTO public.{table} (
@@ -204,7 +225,7 @@ def save_flight(flight: dict, trip_type: str = "one-way"):
                 price_labels, price_rating, prediction_advice,
                 typical_price_min, typical_price_max, typical_price_range,
                 economy_price, business_price,
-                airline, airline_code, airline_logo, stops, stop_count, stop_details,
+                airline, airline_code, airline_logo, stops, stop_count, stop_details, is_self_transfer,
                 departure_time, arrival_time, total_time, duration_minutes, days_until_flight,
                 days_before, day_of_week, daily_delta,
                 airport, source_url, adults, scraped_at
@@ -212,7 +233,7 @@ def save_flight(flight: dict, trip_type: str = "one-way"):
                 %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                 %s, %s, %s, %s, %s, %s, %s, %s,
                 %s, %s, %s,
-                %s, %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s, %s, %s, %s,
                 %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW()
             )
             ON CONFLICT (id) DO UPDATE SET
@@ -229,6 +250,7 @@ def save_flight(flight: dict, trip_type: str = "one-way"):
                 airline_code = EXCLUDED.airline_code,
                 airline_logo = EXCLUDED.airline_logo,
                 stops = EXCLUDED.stops,
+                is_self_transfer = EXCLUDED.is_self_transfer,
                 departure_time = EXCLUDED.departure_time,
                 arrival_time = EXCLUDED.arrival_time,
                 total_time = EXCLUDED.total_time,
@@ -273,6 +295,7 @@ def save_flight(flight: dict, trip_type: str = "one-way"):
             flight.get("stops", "Nonstop"),
             flight.get("stop_count", 0),
             flight.get("stop_details"),
+            flight.get("is_self_transfer", False),
             flight.get("departure_time"),
             flight.get("arrival_time"),
             flight.get("total_time"),

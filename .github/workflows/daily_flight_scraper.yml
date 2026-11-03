@@ -1,0 +1,52 @@
+name: Daily 12:00 PM Flight Scraper & Supabase Sync
+
+on:
+  schedule:
+    # Runs every day at 12:00 PM UTC
+    - cron: '0 12 * * *'
+  # Allows manual triggering from the GitHub Actions tab anytime
+  workflow_dispatch:
+    inputs:
+      limit_routes:
+        description: 'Limit number of routes to scan (e.g. 5, 20, or leave empty for all 250)'
+        required: false
+        default: ''
+
+jobs:
+  scrape-flights:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Python Dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install Playwright & Chromium
+        run: |
+          playwright install chromium
+          playwright install-deps chromium
+
+      - name: Run 250 Routes Google Flights Scraper
+        env:
+          HEADLESS: "true"
+          SUPABASE_POOLER_HOST: ${{ secrets.SUPABASE_POOLER_HOST || 'aws-0-eu-west-1.pooler.supabase.com' }}
+          SUPABASE_PASSWORD: ${{ secrets.SUPABASE_PASSWORD || 'OlcvPogBrneuhYW7' }}
+          SUPABASE_ONE_WAY_USER: ${{ secrets.SUPABASE_ONE_WAY_USER || 'postgres.uopbpkiogtspjwiyiaxe' }}
+          SUPABASE_ROUND_TRIP_USER: ${{ secrets.SUPABASE_ROUND_TRIP_USER || 'postgres.afqmwnbuvsothamcbdpv' }}
+        run: |
+          if [ -n "${{ github.event.inputs.limit_routes }}" ]; then
+            python run_250_routes.py --limit ${{ github.event.inputs.limit_routes }}
+          else
+            python run_250_routes.py
+          fi

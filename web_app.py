@@ -48,6 +48,9 @@ def add_log(msg: str, status_type: str = "info"):
     if len(scrape_logs) > 60:
         scrape_logs.pop()
 
+# Wire scheduler logs to web_app live log console
+scheduler_instance.log_callback = add_log
+
 # Global state for interactive scraping progress
 current_scrape_state = {
     "is_running": False,
@@ -505,6 +508,7 @@ HTML_CONTENT = """<!DOCTYPE html>
               <th class="px-4 py-3">Cheapest Airline</th>
               <th class="px-4 py-3">Flight & Schedule</th>
               <th class="px-4 py-3">Stops & Duration</th>
+              <th class="px-3 py-3 text-center whitespace-nowrap">Self Transfer</th>
               <th class="px-4 py-3">Lowest Fare</th>
               <th class="px-3 py-3 whitespace-nowrap">Typical Range</th>
               <th class="px-3 py-3">Daily Delta</th>
@@ -658,6 +662,17 @@ HTML_CONTENT = """<!DOCTYPE html>
                 </span>
                 <span class="block text-[10px] text-slate-400 mt-0.5">${f.total_time || ''}</span>
               </td>
+              <td class="px-3 py-3 text-center whitespace-nowrap">
+                ${f.is_self_transfer ? `
+                  <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-amber-100 text-amber-800 border border-amber-300" title="Self-transfer: Separate tickets booked together">
+                    ⚠️ Yes
+                  </span>
+                ` : `
+                  <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-slate-100 text-slate-500 border border-slate-200">
+                    No
+                  </span>
+                `}
+              </td>
               <td class="px-4 py-3 whitespace-nowrap">
                 <span class="text-sm font-extrabold ${isCheapestRow ? 'text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-lg' : 'text-emerald-600'}">$${price}</span>
                 <span class="text-[10px] text-slate-400 block">${f.currency || 'USD'}</span>
@@ -793,14 +808,35 @@ HTML_CONTENT = """<!DOCTYPE html>
             document.getElementById('stat-next-run').innerText = `Next: ${sched.next_run.split(' ')[1] || '12:00:00'}`;
           }
 
-          if (p.is_running) {
+          const isRunning = p.is_running || (sched && sched.is_scraping);
+          if (isRunning) {
             showProgress(true);
-            const pct = Math.round((p.current_day / p.total_days) * 100) || 1;
+            let pct = 1;
+            let statusText = '';
+            let subText = '';
+
+            if (p.is_running) {
+              pct = Math.round((p.current_day / p.total_days) * 100) || 1;
+              statusText = `Scraping ${p.route}: Day ${p.current_day} of ${p.total_days}`;
+              if (p.latest_flight) {
+                subText = `Found: $${p.latest_flight.current_lowest_price} on ${p.latest_flight.airline} (${p.latest_flight.stops})`;
+              }
+            } else if (sched && sched.is_scraping) {
+              const rIdx = sched.progress.route_index || 1;
+              const totR = sched.progress.total_routes || 250;
+              const curD = sched.progress.current_day || 1;
+              pct = Math.round((rIdx / totR) * 100) || 1;
+              statusText = `12:00 PM Trigger: [${rIdx}/${totR}] ${sched.progress.current_route || 'Routes'}: Day ${curD}/30`;
+              if (sched.progress.latest_cheapest) {
+                subText = `Found: $${sched.progress.latest_cheapest.price} on ${sched.progress.latest_cheapest.airline}`;
+              }
+            }
+
             document.getElementById('progress-bar-fill').style.width = `${pct}%`;
             document.getElementById('progress-percent-text').innerText = `${pct}%`;
-            document.getElementById('progress-status-text').innerText = `Scraping ${p.route}: Day ${p.current_day} of ${p.total_days}`;
-            if (p.latest_flight) {
-              document.getElementById('progress-sub-text').innerText = `Found: $${p.latest_flight.current_lowest_price} on ${p.latest_flight.airline} (${p.latest_flight.stops})`;
+            document.getElementById('progress-status-text').innerText = statusText;
+            if (subText) {
+              document.getElementById('progress-sub-text').innerText = subText;
             }
           } else {
             // Finished
@@ -911,10 +947,10 @@ HTML_CONTENT = """<!DOCTYPE html>
     function exportTableToCSV() {
       const rows = document.querySelectorAll('#flights-table-body tr');
       if (!rows.length) return alert('No flights to export');
-      let csv = 'date,day_of_week,days_before,route,airline,schedule,stops,price_usd,typical_range,daily_delta,price_label_insights\\n';
+      let csv = 'date,day_of_week,days_before,route,airline,schedule,stops,is_self_transfer,price_usd,typical_range,daily_delta,price_label_insights\\n';
       rows.forEach(tr => {
         const cols = tr.querySelectorAll('td');
-        if (cols.length >= 11) {
+        if (cols.length >= 12) {
           const date = cols[0].innerText.replace('📅', '').trim();
           const day = cols[1].innerText.trim();
           const daysBefore = cols[2].innerText.replace('+', '').replace('d', '').trim();
@@ -922,11 +958,12 @@ HTML_CONTENT = """<!DOCTYPE html>
           const airline = cols[4].innerText.trim();
           const sched = cols[5].innerText.trim();
           const stops = cols[6].innerText.replace(/\\n/g, ' ').trim();
-          const price = cols[7].innerText.replace('$', '').replace(/\\n/g, ' ').trim();
-          const range = cols[8].innerText.trim();
-          const delta = cols[9].innerText.replace(/[^0-9.-]/g, '').trim() || '0';
-          const insights = cols[10].innerText.replace(/\\n/g, ' | ').replace(/\"/g, '""').trim();
-          csv += `"${date}","${day}","${daysBefore}","${route}","${airline}","${sched}","${stops}","${price}","${range}","${delta}","${insights}"\\n`;
+          const isSelfTransfer = cols[7].innerText.includes('Yes') ? 'TRUE' : 'FALSE';
+          const price = cols[8].innerText.replace('$', '').replace(/\\n/g, ' ').trim();
+          const range = cols[9].innerText.trim();
+          const delta = cols[10].innerText.replace(/[^0-9.-]/g, '').trim() || '0';
+          const insights = cols[11].innerText.replace(/\\n/g, ' | ').replace(/\"/g, '""').trim();
+          csv += `"${date}","${day}","${daysBefore}","${route}","${airline}","${sched}","${stops}","${isSelfTransfer}","${price}","${range}","${delta}","${insights}"\\n`;
         }
       });
       const blob = new Blob([csv], { type: 'text/csv' });
