@@ -94,6 +94,16 @@ def test_supabase():
 def get_flights(trip_type: str = "round-trip", limit: int = 100):
     return database.get_flights(trip_type=trip_type, limit=limit)
 
+@app.get("/api/flights/round-trip")
+def get_round_trip_flights(limit: int = 250):
+    """Dedicated endpoint for Round-Trip database (afqmwnbuvsothamcbdpv -> round_trip_flights)."""
+    return database.get_flights(trip_type="round-trip", limit=limit)
+
+@app.get("/api/flights/one-way")
+def get_one_way_flights(limit: int = 250):
+    """Dedicated endpoint for One-Way database (uopbpkiogtspjwiyiaxe -> one_way_flights)."""
+    return database.get_flights(trip_type="one-way", limit=limit)
+
 @app.get("/api/routes")
 def get_routes():
     return TOP_250_ROUTES
@@ -194,7 +204,7 @@ def _run_30_days_task(origin: str, destination: str, start_date: str, currency: 
             destination=destination,
             start_date=start_date,
             days_count=30,
-            return_window_days=13,
+            return_window_days=14,
             save_to_supabase=True,
             delay_sec=0.25,
             on_progress=on_progress
@@ -351,7 +361,7 @@ HTML_CONTENT = """<!DOCTYPE html>
         <div>
           <p class="text-xs font-medium text-slate-500 uppercase tracking-wider">30-Day Window</p>
           <p id="stat-window-range" class="text-2xl font-bold text-slate-900 mt-1">30 Days</p>
-          <p class="text-xs text-slate-400 mt-0.5">Cheapest in 1-13d Return Window</p>
+          <p class="text-xs text-slate-400 mt-0.5">Cheapest in 1-14d Return Window</p>
         </div>
         <div class="size-11 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center font-bold text-lg">📅</div>
       </div>

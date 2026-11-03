@@ -16,9 +16,9 @@ on:
         required: false
         default: '30'
       return_window:
-        description: 'Max return days window [1..13] (default: 13)'
+        description: 'Max return days window [1..14] (default: 14)'
         required: false
-        default: '13'
+        default: '14'
 
 jobs:
   scrape-round-trip-flights:
@@ -64,3 +64,4 @@ jobs:
           fi
           echo "Executing: $CMD"
           eval $CMD
+

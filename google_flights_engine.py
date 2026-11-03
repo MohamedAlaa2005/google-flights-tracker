@@ -946,7 +946,7 @@ def scrape_round_trip_range(
     destination: str,
     start_date: Optional[str] = None,
     days_count: int = 30,
-    return_window_days: int = 13,
+    return_window_days: int = 14,
     currency: str = "USD",
     save_to_supabase: bool = True,
     delay_sec: float = 0.2,
