@@ -1,3 +1,4 @@
+import time
 import os
 from datetime import datetime, date
 import psycopg2
@@ -12,7 +13,7 @@ ONE_WAY_USER = os.getenv("SUPABASE_ONE_WAY_USER", "postgres.uopbpkiogtspjwiyiaxe
 ROUND_TRIP_USER = os.getenv("SUPABASE_ROUND_TRIP_USER", "postgres.afqmwnbuvsothamcbdpv")
 PORT = 6543
 
-def get_connection(trip_type: str = "one-way"):
+def get_connection(trip_type: str = "round-trip"):
     user = ROUND_TRIP_USER if trip_type == "round-trip" else ONE_WAY_USER
     return psycopg2.connect(
         host=HOST,
@@ -151,26 +152,28 @@ def init_tables():
         except Exception as e:
             print(f"[Supabase DB] Error initializing {table}: {e}")
 
-def save_flight(flight: dict, trip_type: str = "one-way"):
-    """Upserts the cheapest verified flight record into Supabase."""
+def save_flight(flight: dict, trip_type: str = "round-trip"):
+    """Saves verified flight record directly into Supabase (all flights recorded, not a snapshot)."""
     table = "round_trip_flights" if trip_type == "round-trip" else "one_way_flights"
     conn = get_connection(trip_type)
     try:
         cur = conn.cursor()
 
-        # 1. Fetch previous price to calculate daily delta
+        # 1. Fetch previous price for same route & departure date to calculate daily delta
+        dep_str = str(flight.get("departure_date") or flight.get("date"))[:10]
         cur.execute(
-            f"SELECT current_lowest_price FROM public.{table} WHERE id = %s",
-            (flight["id"],)
+            f"""SELECT current_lowest_price FROM public.{table} 
+                WHERE origin_code = %s AND destination_code = %s AND (departure_date = %s OR date = %s)
+                ORDER BY scraped_at DESC LIMIT 1""",
+            (flight["origin_code"], flight["destination_code"], dep_str, dep_str)
         )
         row = cur.fetchone()
         prev_price = float(row[0]) if row and row[0] is not None else None
         daily_delta = round(float(flight["current_lowest_price"]) - prev_price, 2) if prev_price is not None else 0.0
 
         # Calculate days_before and day_of_week
-        dep_str = str(flight.get("departure_date") or flight.get("date"))
         try:
-            dep_date_obj = datetime.strptime(dep_str[:10], "%Y-%m-%d").date()
+            dep_date_obj = datetime.strptime(dep_str, "%Y-%m-%d").date()
             days_before = flight.get("days_before") if flight.get("days_before") is not None else max(0, (dep_date_obj - date.today()).days)
             day_of_week = flight.get("day_of_week") or dep_date_obj.strftime("%A")
         except Exception:
@@ -181,7 +184,7 @@ def save_flight(flight: dict, trip_type: str = "one-way"):
         flight["day_of_week"] = day_of_week
         flight["daily_delta"] = daily_delta
 
-        # Check if typical_price_min/max is missing and inherit from another date on same route
+        # Check typical_price_min/max
         t_min = flight.get("typical_price_min")
         t_max = flight.get("typical_price_max")
         t_range = flight.get("typical_price_range")
@@ -214,7 +217,11 @@ def save_flight(flight: dict, trip_type: str = "one-way"):
         )
         flight["is_self_transfer"] = is_st
 
-        # 2. Upsert flight
+        # 2. Assign unique ID per scrape so every flight scrape is recorded as a new row
+        raw_id = flight.get("id") or f"GF_{flight['origin_code']}_{flight['destination_code']}_{dep_str}"
+        unique_record_id = f"{raw_id}_{int(time.time() * 1000)}"
+
+        # 3. Insert flight (all flights recorded over time)
         sql = f"""
             INSERT INTO public.{table} (
                 id, trip_type, leaving, origin_code, origin_city, origin_country,
@@ -238,31 +245,11 @@ def save_flight(flight: dict, trip_type: str = "one-way"):
             )
             ON CONFLICT (id) DO UPDATE SET
                 current_lowest_price = EXCLUDED.current_lowest_price,
-                price_labels = EXCLUDED.price_labels,
-                price_rating = EXCLUDED.price_rating,
-                prediction_advice = EXCLUDED.prediction_advice,
-                typical_price_min = COALESCE(EXCLUDED.typical_price_min, public.{table}.typical_price_min),
-                typical_price_max = COALESCE(EXCLUDED.typical_price_max, public.{table}.typical_price_max),
-                typical_price_range = COALESCE(EXCLUDED.typical_price_range, public.{table}.typical_price_range),
-                economy_price = EXCLUDED.economy_price,
-                business_price = EXCLUDED.business_price,
-                airline = EXCLUDED.airline,
-                airline_code = EXCLUDED.airline_code,
-                airline_logo = EXCLUDED.airline_logo,
-                stops = EXCLUDED.stops,
-                is_self_transfer = EXCLUDED.is_self_transfer,
-                departure_time = EXCLUDED.departure_time,
-                arrival_time = EXCLUDED.arrival_time,
-                total_time = EXCLUDED.total_time,
-                duration_minutes = EXCLUDED.duration_minutes,
-                days_before = EXCLUDED.days_before,
-                day_of_week = EXCLUDED.day_of_week,
-                daily_delta = EXCLUDED.daily_delta,
                 scraped_at = NOW();
         """
 
         cur.execute(sql, (
-            flight["id"],
+            unique_record_id,
             trip_type,
             flight["leaving"],
             flight["origin_code"],
@@ -289,42 +276,24 @@ def save_flight(flight: dict, trip_type: str = "one-way"):
             flight.get("typical_price_range"),
             flight.get("economy_price", flight["current_lowest_price"]),
             flight.get("business_price"),
-            flight["airline"],
+            flight.get("airline") or "Multiple Airlines",
             flight.get("airline_code"),
             flight.get("airline_logo"),
-            flight.get("stops", "Nonstop"),
+            flight.get("stops") or "Available",
             flight.get("stop_count", 0),
             flight.get("stop_details"),
             flight.get("is_self_transfer", False),
             flight.get("departure_time"),
             flight.get("arrival_time"),
-            flight.get("total_time"),
+            flight.get("total_time") or "N/A",
             flight.get("duration_minutes"),
             flight.get("days_until_flight", days_before),
             days_before,
             day_of_week,
             daily_delta,
-            flight.get("airport"),
+            flight.get("airport") or f"{flight['origin_code']} - {flight['destination_code']}",
             flight.get("source_url"),
             flight.get("adults", 2)
-        ))
-
-        # 3. Log to history
-        route_id = f"{flight['origin_code']}-{flight['destination_code']}"
-        cur.execute("""
-            INSERT INTO public.flight_price_history (
-                route_id, trip_type, origin, destination, flight_date, price, price_rating, airline, daily_delta, recorded_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW());
-        """, (
-            route_id,
-            trip_type,
-            flight["origin_code"],
-            flight["destination_code"],
-            flight["date"],
-            flight["current_lowest_price"],
-            flight.get("price_rating", "fair"),
-            flight["airline"],
-            daily_delta
         ))
 
         conn.commit()
@@ -333,19 +302,19 @@ def save_flight(flight: dict, trip_type: str = "one-way"):
     finally:
         conn.close()
 
-def get_flights(trip_type: str = "one-way", limit: int = 250):
+def get_flights(trip_type: str = "round-trip", limit: int = 250):
     table = "round_trip_flights" if trip_type == "round-trip" else "one_way_flights"
     conn = get_connection(trip_type)
     try:
         cur = conn.cursor(cursor_factory=RealDictCursor)
-        cur.execute(f"SELECT * FROM public.{table} ORDER BY COALESCE(departure_date, date) ASC, current_lowest_price ASC LIMIT %s;", (limit,))
+        cur.execute(f"SELECT * FROM public.{table} ORDER BY scraped_at DESC, COALESCE(departure_date, date) ASC LIMIT %s;", (limit,))
         rows = cur.fetchall()
         cur.close()
         return [dict(r) for r in rows]
     finally:
         conn.close()
 
-def clear_flights(trip_type: str = "one-way"):
+def clear_flights(trip_type: str = "round-trip"):
     table = "round_trip_flights" if trip_type == "round-trip" else "one_way_flights"
     conn = get_connection(trip_type)
     try:
