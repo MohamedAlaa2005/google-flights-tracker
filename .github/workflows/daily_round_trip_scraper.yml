@@ -14,7 +14,7 @@ on:
       departure_days:
         description: 'Departure days ahead to look (default: 30)'
         required: false
-        default: '30'
+        default: '14'
       return_window:
         description: 'Max return days window [1..14] (default: 14)'
         required: false
