@@ -530,13 +530,8 @@ def _scrape_worker_chunk(
                         "adults": 1
                     }
 
-                    if save_to_supabase:
-                        try:
-                            database.save_flight(record, trip_type="one-way")
-                            record["saved_to_db"] = True
-                        except Exception as db_err:
-                            logger.error(f"Failed to save {record['id']} to Supabase: {db_err}")
-                            record["saved_to_db"] = False
+                    # In-memory collection; saved in high-performance batch after chunk completion
+                    record["saved_to_db"] = False
 
                     worker_results.append(record)
                     logger.info(f"[Worker {worker_id}] [OK] [{target_date_str}] Cheapest: ${record['current_lowest_price']} on {record['airline']} ({record['stops']}) | {record['price_rating'].upper()}")
@@ -647,6 +642,15 @@ def scrape_30_days_range(
     all_results.sort(key=lambda r: r.get("departure_date", ""))
     total_elapsed = round(time.time() - t_start, 1)
     logger.info(f"[OK] Completed {len(all_results)} dates in parallel in {total_elapsed}s ({len(chunks)} workers, ~{chunk_size} days each)!")
+
+    if save_to_supabase and all_results:
+        try:
+            cnt = database.save_flights_batch(all_results, trip_type="one-way")
+            for r in all_results:
+                r["saved_to_db"] = True
+            logger.info(f"[Supabase DB] Batch saved {cnt} one-way flights for {origin}->{destination} in 1 query.")
+        except Exception as batch_err:
+            logger.error(f"[Supabase DB] Error batch saving {origin}->{destination}: {batch_err}")
 
     return all_results
 
@@ -933,13 +937,8 @@ def _scrape_round_trip_worker_chunk(
                             "adults": 1
                         }
 
-                        if save_to_supabase:
-                            try:
-                                database.save_flight(record, trip_type="round-trip")
-                                record["saved_to_db"] = True
-                            except Exception as db_err:
-                                logger.error(f"Failed to save RT {record['id']} to Supabase: {db_err}")
-                                record["saved_to_db"] = False
+                        # In-memory collection; saved in high-performance batch after chunk completion
+                        record["saved_to_db"] = False
 
                         worker_results.append(record)
                         saved_count_for_day += 1
@@ -1058,6 +1057,15 @@ def scrape_round_trip_range(
     all_results.sort(key=lambda r: r.get("departure_date", ""))
     total_elapsed = round(time.time() - t_start, 1)
     logger.info(f"[OK] Completed {len(all_results)} round-trip dates in parallel in {total_elapsed}s!")
+
+    if save_to_supabase and all_results:
+        try:
+            cnt = database.save_flights_batch(all_results, trip_type="round-trip")
+            for r in all_results:
+                r["saved_to_db"] = True
+            logger.info(f"[Supabase DB] Batch saved {cnt} round-trip flights for {origin}->{destination} in 1 query.")
+        except Exception as batch_err:
+            logger.error(f"[Supabase DB] Error batch saving RT {origin}->{destination}: {batch_err}")
 
     return all_results
 

@@ -1,0 +1,43 @@
+name: Round-Trip - Batch 4 (Routes 151-200)
+
+on:
+  schedule:
+    # Runs every day at 12:00 PM UTC
+    - cron: '0 12 * * *'
+  workflow_dispatch:
+
+jobs:
+  scrape-roundtrip-batch-4:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          ref: round-trip
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Python Dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install Playwright & Chromium
+        run: |
+          playwright install chromium
+          playwright install-deps chromium
+
+      - name: Run Round-Trip Batch 4 (Routes 151-200)
+        env:
+          HEADLESS: "true"
+          SUPABASE_POOLER_HOST: ${{ secrets.SUPABASE_POOLER_HOST || 'aws-0-eu-west-1.pooler.supabase.com' }}
+          SUPABASE_PASSWORD: ${{ secrets.SUPABASE_PASSWORD || 'OlcvPogBrneuhYW7' }}
+          SUPABASE_ROUND_TRIP_USER: ${{ secrets.SUPABASE_ROUND_TRIP_USER || 'postgres.afqmwnbuvsothamcbdpv' }}
+        run: |
+          python run_250_routes_round_trip.py --batch 4 --return-window 14
