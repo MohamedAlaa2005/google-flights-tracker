@@ -91,8 +91,18 @@ def test_supabase():
     return database.test_supabase_connection()
 
 @app.get("/api/flights")
-def get_flights(trip_type: str = "one-way", limit: int = 100):
+def get_flights(trip_type: str = "round-trip", limit: int = 100):
     return database.get_flights(trip_type=trip_type, limit=limit)
+
+@app.get("/api/flights/round-trip")
+def get_round_trip_flights(limit: int = 250):
+    """Dedicated endpoint for Round-Trip database (afqmwnbuvsothamcbdpv -> round_trip_flights)."""
+    return database.get_flights(trip_type="round-trip", limit=limit)
+
+@app.get("/api/flights/one-way")
+def get_one_way_flights(limit: int = 250):
+    """Dedicated endpoint for One-Way database (uopbpkiogtspjwiyiaxe -> one_way_flights)."""
+    return database.get_flights(trip_type="one-way", limit=limit)
 
 @app.get("/api/routes")
 def get_routes():
@@ -111,7 +121,7 @@ def get_scrape_progress():
     }
 
 @app.post("/api/clear")
-def clear_db(trip_type: str = "one-way"):
+def clear_db(trip_type: str = "round-trip"):
     success = database.clear_flights(trip_type)
     add_log(f"Cleared {trip_type} database table in Supabase.", "warn")
     return {"success": success}
@@ -189,10 +199,12 @@ def _run_30_days_task(origin: str, destination: str, start_date: str, currency: 
             add_log(f"Day {cur}/30 [{d_str}]: No flights available on this date", "warn")
 
     try:
-        results = google_flights_engine.scrape_30_days_range(
+        results = google_flights_engine.scrape_round_trip_range(
             origin=origin,
             destination=destination,
             start_date=start_date,
+            days_count=30,
+            return_window_days=14,
             save_to_supabase=True,
             delay_sec=0.25,
             on_progress=on_progress
@@ -241,7 +253,7 @@ def _run_250_routes_task(currency: str, adults: int):
             add_log(f"[{r_idx}/{total_r}] {r_key} Day {p_data.get('day')}: ${fl['current_lowest_price']} ({fl['airline']})", "info")
 
     try:
-        stats = google_flights_engine.scrape_all_250_routes(
+        stats = google_flights_engine.scrape_all_250_routes_round_trip(
             save_to_supabase=True,
             on_route_progress=on_route_prog
         )
@@ -349,7 +361,7 @@ HTML_CONTENT = """<!DOCTYPE html>
         <div>
           <p class="text-xs font-medium text-slate-500 uppercase tracking-wider">30-Day Window</p>
           <p id="stat-window-range" class="text-2xl font-bold text-slate-900 mt-1">30 Days</p>
-          <p class="text-xs text-slate-400 mt-0.5">Cheapest Fare Per Day</p>
+          <p class="text-xs text-slate-400 mt-0.5">Cheapest in 1-14d Return Window</p>
         </div>
         <div class="size-11 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center font-bold text-lg">📅</div>
       </div>
@@ -408,7 +420,7 @@ HTML_CONTENT = """<!DOCTYPE html>
           <!-- Scrape 30 Days -->
           <button id="btn-scrape-30" onclick="trigger30DaysScrape()" class="flex-1 min-w-[200px] bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-5 rounded-xl shadow-md shadow-blue-500/20 flex items-center justify-center gap-2 transition-all">
             <svg class="size-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
-            <span>Scrape 30 Days (Cheapest Only)</span>
+            <span>Scrape 30 Days (Round-Trip)</span>
           </button>
 
           <!-- Run Top 250 Global Batch -->
@@ -502,6 +514,7 @@ HTML_CONTENT = """<!DOCTYPE html>
           <thead class="bg-slate-50 text-[11px] font-bold text-slate-500 uppercase tracking-wider border-b border-slate-200">
             <tr>
               <th class="px-4 py-3">Departure Date</th>
+              <th class="px-4 py-3">Return Date</th>
               <th class="px-3 py-3">Day of Week</th>
               <th class="px-3 py-3">Days Before</th>
               <th class="px-4 py-3">Route</th>
@@ -567,7 +580,7 @@ HTML_CONTENT = """<!DOCTYPE html>
     async function loadStoredFlights() {
       const tbody = document.getElementById('flights-table-body');
       try {
-        const res = await fetch('/api/flights?trip_type=one-way&limit=250');
+        const res = await fetch('/api/flights?trip_type=round-trip&limit=250');
         let flights = await res.json();
         
         // Sort chronologically by date
@@ -634,6 +647,11 @@ HTML_CONTENT = """<!DOCTYPE html>
               <td class="px-4 py-3 font-semibold text-slate-900 whitespace-nowrap">
                 <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg ${isCheapestRow ? 'bg-emerald-100 text-emerald-900 font-bold' : 'bg-slate-100 text-slate-800'}">
                   📅 ${formattedDate}
+                </span>
+              </td>
+              <td class="px-4 py-3 font-semibold text-slate-900 whitespace-nowrap">
+                <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-indigo-50 text-indigo-900 font-bold border border-indigo-200">
+                  🔁 ${f.return_date || 'N/A'}
                 </span>
               </td>
               <td class="px-3 py-3 whitespace-nowrap">
@@ -927,7 +945,7 @@ HTML_CONTENT = """<!DOCTYPE html>
     async function clearDatabase() {
       if (!confirm('Are you sure you want to clear stored flights in Supabase?')) return;
       try {
-        const res = await fetch('/api/clear?trip_type=one-way', { method: 'POST' });
+        const res = await fetch('/api/clear?trip_type=round-trip', { method: 'POST' });
         const data = await res.json();
         if (data.success) {
           addLogMessage('Cleared Supabase flights table.', 'warn');
