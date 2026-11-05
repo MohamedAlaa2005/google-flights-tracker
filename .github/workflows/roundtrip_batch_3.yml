@@ -40,4 +40,4 @@ jobs:
           SUPABASE_PASSWORD: ${{ secrets.SUPABASE_PASSWORD || 'OlcvPogBrneuhYW7' }}
           SUPABASE_ROUND_TRIP_USER: ${{ secrets.SUPABASE_ROUND_TRIP_USER || 'postgres.afqmwnbuvsothamcbdpv' }}
         run: |
-          python run_250_routes_round_trip.py --batch 3 --return-window 14
+          python run_250_routes_round_trip.py --batch 3 --days 14 --return-window 14

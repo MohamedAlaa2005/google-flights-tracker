@@ -34,7 +34,7 @@ def main():
     parser.add_argument("--start-index", type=int, default=None, help="Custom starting route index (0-based)")
     parser.add_argument("--end-index", type=int, default=None, help="Custom ending route index (0-based)")
     parser.add_argument("--limit", type=int, default=None, help="Limit number of routes to process (e.g. 5 for testing).")
-    parser.add_argument("--days", type=int, default=30, help="Departure days to look ahead (default: 30).")
+    parser.add_argument("--days", type=int, default=14, help="Departure days to look ahead (default: 14).")
     parser.add_argument("--return-window", type=int, default=14, help="Max return days offset (default: 14, searching [1..14] days stay).")
     parser.add_argument("--delay", type=float, default=0.2, help="Delay between page requests (default: 0.2s).")
     parser.add_argument("--dry-run", action="store_true", help="Do not persist to Supabase.")
