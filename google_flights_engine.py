@@ -530,13 +530,8 @@ def _scrape_worker_chunk(
                         "adults": 1
                     }
 
-                    if save_to_supabase:
-                        try:
-                            database.save_flight(record, trip_type="one-way")
-                            record["saved_to_db"] = True
-                        except Exception as db_err:
-                            logger.error(f"Failed to save {record['id']} to Supabase: {db_err}")
-                            record["saved_to_db"] = False
+                    # In-memory collection; saved in high-performance batch after chunk completion
+                    record["saved_to_db"] = False
 
                     worker_results.append(record)
                     logger.info(f"[Worker {worker_id}] [OK] [{target_date_str}] Cheapest: ${record['current_lowest_price']} on {record['airline']} ({record['stops']}) | {record['price_rating'].upper()}")
@@ -648,6 +643,15 @@ def scrape_30_days_range(
     total_elapsed = round(time.time() - t_start, 1)
     logger.info(f"[OK] Completed {len(all_results)} dates in parallel in {total_elapsed}s ({len(chunks)} workers, ~{chunk_size} days each)!")
 
+    if save_to_supabase and all_results:
+        try:
+            cnt = database.save_flights_batch(all_results, trip_type="one-way")
+            for r in all_results:
+                r["saved_to_db"] = True
+            logger.info(f"[Supabase DB] Batch saved {cnt} one-way flights for {origin}->{destination} in 1 query.")
+        except Exception as batch_err:
+            logger.error(f"[Supabase DB] Error batch saving {origin}->{destination}: {batch_err}")
+
     return all_results
 
 
@@ -684,6 +688,422 @@ def scrape_all_250_routes(
             origin=orig,
             destination=dest,
             days_count=30,
+            save_to_supabase=save_to_supabase,
+            delay_sec=0.3,
+            on_progress=_day_cb
+        )
+
+        total_saved += len(day_results)
+        route_stats[route_key] = len(day_results)
+
+    return {
+        "total_routes_processed": len(route_stats),
+        "total_saved_flights": total_saved,
+        "details": route_stats
+    }
+
+
+def _scrape_round_trip_worker_chunk(
+    worker_id: int,
+    origin: str,
+    destination: str,
+    route_info: Dict,
+    current_dt: date,
+    day_indices: List[int],
+    total_days: int,
+    return_window_days: int,
+    currency: str,
+    save_to_supabase: bool,
+    delay_sec: float,
+    prog_lock: threading.Lock,
+    prog_counter: List[int],
+    on_progress: Optional[Callable[[int, int, dict], None]]
+) -> List[Dict]:
+    worker_results = []
+    chunk_desc = f"{day_indices[0]} to {day_indices[-1]}" if day_indices else "none"
+    logger.info(f"[RT Worker {worker_id}] Starting round-trip chunk: {len(day_indices)} departure days (Offset {chunk_desc})...")
+
+    with sync_playwright() as p:
+        browser = p.chromium.connect_over_cdp(f"http://localhost:{PORT}")
+        context = browser.contexts[0] if browser.contexts else browser.new_context()
+
+        for day_idx in day_indices:
+            dep_dt = current_dt + timedelta(days=day_idx)
+            dep_date_str = dep_dt.strftime("%Y-%m-%d")
+            # Default initial return date (e.g. 7 days out)
+            init_offset = min(7, return_window_days)
+            init_ret_str = (dep_dt + timedelta(days=init_offset)).strftime("%Y-%m-%d")
+
+            initial_url = (
+                "https://www.google.com/travel/flights"
+                f"?q=Flights%20to%20{destination}%20from%20{origin}%20from%20{dep_date_str}%20to%20{init_ret_str}"
+                f"&curr={currency}&hl=en&gl=eg"
+            )
+
+            page = context.new_page()
+            page.set_viewport_size({"width": 1400, "height": 900})
+
+            try:
+                page.goto(initial_url, wait_until="domcontentloaded", timeout=20000)
+
+                for label in ("Accept all", "Reject all"):
+                    if click_if_exists(page.get_by_role("button", name=label), timeout=1000):
+                        break
+
+                page.wait_for_timeout(1000)
+
+                # 1. Open Return Date calendar to read all return day prices in window
+                ret_input = page.locator("input[aria-label='Return']").first
+                if ret_input.count() > 0:
+                    ret_input.click(timeout=3000)
+                    page.wait_for_timeout(1000)
+
+                # Window: [dep_date + 1, ..., dep_date + return_window_days]
+                window_dates = [(dep_dt + timedelta(days=d)).strftime("%Y-%m-%d") for d in range(1, return_window_days + 1)]
+                date_prices = {}
+                for d_str in window_dates:
+                    cell = page.locator(f"[data-iso='{d_str}']")
+                    if cell.count() > 0:
+                        txt = cell.first.inner_text().replace("\n", " ")
+                        m = re.search(r"\$([\d,]+)", txt)
+                        if m:
+                            p_val = int(m.group(1).replace(",", ""))
+                            date_prices[d_str] = p_val
+
+                if not date_prices:
+                    # Fallback: if calendar didn't populate, use init_ret_str
+                    best_ret_date = init_ret_str
+                    cheapest_calendar_price = None
+                else:
+                    best_ret_date = min(date_prices.keys(), key=lambda d: date_prices[d])
+                    cheapest_calendar_price = date_prices[best_ret_date]
+
+                # 2. Navigate to the verified cheapest return date flight results
+                target_url = (
+                    "https://www.google.com/travel/flights"
+                    f"?q=Flights%20to%20{destination}%20from%20{origin}%20from%20{dep_date_str}%20to%20{best_ret_date}"
+                    f"&curr={currency}&hl=en&gl=eg"
+                )
+
+                if best_ret_date != init_ret_str or not date_prices:
+                    page.goto(target_url, wait_until="domcontentloaded", timeout=20000)
+                    page.wait_for_timeout(1000)
+
+                # 3. Extract Price Insights
+                insights = extract_price_insights(page)
+                route_key = (origin, destination)
+                with CACHE_LOCK:
+                    if insights.get("typical_min") is not None:
+                        ROUTE_RANGE_CACHE[route_key] = insights
+                    elif route_key in ROUTE_RANGE_CACHE:
+                        cached = ROUTE_RANGE_CACHE[route_key]
+                        insights["typical_min"] = cached.get("typical_min")
+                        insights["typical_max"] = cached.get("typical_max")
+                        insights["range_text"] = cached.get("range_text")
+
+                # 4. Click "Cheapest" tab if available
+                try:
+                    cheapest_tab = page.get_by_role("tab", name=re.compile("Cheapest", re.I))
+                    if cheapest_tab.count() > 0:
+                        cheapest_tab.first.click(timeout=2000)
+                        page.wait_for_timeout(1000)
+                except Exception:
+                    pass
+
+                page.mouse.wheel(0, 500)
+                page.wait_for_timeout(600)
+
+                best_flight = read_cheapest_flight(page, dep_date_str)
+                if not best_flight:
+                    page.mouse.wheel(0, 500)
+                    page.wait_for_timeout(800)
+                    best_flight = read_cheapest_flight(page, dep_date_str)
+
+                # Determine final price and flight card details
+                if best_flight:
+                    flight_price = float(best_flight["price_usd"])
+                    airline = best_flight["airline"]
+                    stops_count = best_flight["stops"]
+                    stops_label = "Nonstop" if stops_count == 0 else (f"{stops_count} stop" if stops_count == 1 else f"{stops_count} stops")
+                    dur_h = best_flight["duration_min"] // 60
+                    dur_m = best_flight["duration_min"] % 60
+                    total_time_str = f"{dur_h}h {dur_m}m" if dur_h > 0 else f"{dur_m}m"
+                    duration_min = best_flight["duration_min"]
+                    is_self_transfer = best_flight.get("is_self_transfer", False)
+                    dep_time = best_flight["dep_time"]
+                    arr_time = best_flight["arr_time"]
+                    stop_details = best_flight.get("layover") or ("Direct Nonstop Flight" if stops_count == 0 else f"{stops_count} stop(s)")
+                elif cheapest_calendar_price:
+                    flight_price = float(cheapest_calendar_price)
+                    airline = "Multiple Airlines"
+                    stops_count = 0
+                    stops_label = "Available"
+                    total_time_str = "Varies"
+                    duration_min = 0
+                    is_self_transfer = False
+                    dep_time = "Various"
+                    arr_time = "Various"
+                    stop_details = "Verified on Google Flights"
+                else:
+                    flight_price = None
+
+                if flight_price is not None:
+                    days_before = max(0, (dep_dt - date.today()).days)
+                    day_of_week = dep_dt.strftime("%A")
+
+                    # If date_prices found for window, save ALL return dates (1 to return_window_days)
+                    # so the departure day is repeated for every return option!
+                    if not date_prices:
+                        date_prices = {best_ret_date: int(flight_price)}
+
+                    saved_count_for_day = 0
+                    for ret_d in window_dates:
+                        if ret_d not in date_prices:
+                            continue
+                        ret_p = float(date_prices[ret_d])
+                        eval_insights = evaluate_price_against_range(ret_p, insights)
+                        ret_url = (
+                            "https://www.google.com/travel/flights"
+                            f"?q=Flights%20to%20{destination}%20from%20{origin}%20from%20{dep_date_str}%20to%20{ret_d}"
+                            f"&curr={currency}&hl=en&gl=eg"
+                        )
+
+                        if ret_d == best_ret_date:
+                            card_airline = airline
+                            card_stops = stops_label
+                            card_stop_count = stops_count
+                            card_details = stop_details
+                            card_st = is_self_transfer
+                            card_dep = dep_time
+                            card_arr = arr_time
+                            card_tot = total_time_str
+                            card_dur = duration_min
+                        else:
+                            card_airline = airline if airline != "Multiple Airlines" else "Google Flights"
+                            card_stops = stops_label
+                            card_stop_count = stops_count
+                            card_details = f"Round trip returning {ret_d}"
+                            card_st = is_self_transfer
+                            card_dep = dep_time
+                            card_arr = arr_time
+                            card_tot = total_time_str
+                            card_dur = duration_min
+
+                        record = {
+                            "id": f"GF_RT_{origin}_{destination}_{dep_date_str}_{ret_d}",
+                            "trip_type": "round-trip",
+                            "leaving": f"{route_info.get('originCity', origin)} ({origin})",
+                            "origin_code": origin,
+                            "origin_city": route_info.get("originCity", origin),
+                            "origin_country": route_info.get("originCountry", "International"),
+                            "departure_airport": origin,
+                            "departure_airport_name": f"{origin} International Airport",
+                            "going": f"{route_info.get('destinationCity', destination)} ({destination})",
+                            "destination_code": destination,
+                            "destination_city": route_info.get("destinationCity", destination),
+                            "destination_country": route_info.get("destinationCountry", "International"),
+                            "arrival_airport": destination,
+                            "arrival_airport_name": f"{destination} Airport",
+                            "date": dep_date_str,
+                            "departure_date": dep_date_str,
+                            "return_date": ret_d,
+                            "current_lowest_price": ret_p,
+                            "currency": currency,
+                            "price_labels": eval_insights["price_labels"],
+                            "price_rating": eval_insights["price_rating"],
+                            "prediction_advice": eval_insights["prediction_advice"],
+                            "typical_price_min": eval_insights.get("typical_min"),
+                            "typical_price_max": eval_insights.get("typical_max"),
+                            "typical_price_range": eval_insights.get("typical_range", ""),
+                            "economy_price": ret_p,
+                            "business_price": None,
+                            "airline": card_airline,
+                            "airline_code": card_airline[:2].upper() if card_airline else "GF",
+                            "airline_logo": f"https://www.gstatic.com/flights/airline_logos/70px/{card_airline[:2].upper()}.png" if card_airline else "",
+                            "stops": card_stops,
+                            "stop_count": card_stop_count,
+                            "stop_details": card_details,
+                            "is_self_transfer": card_st,
+                            "departure_time": card_dep,
+                            "arrival_time": card_arr,
+                            "total_time": card_tot,
+                            "duration_minutes": card_dur,
+                            "days_until_flight": days_before,
+                            "days_before": days_before,
+                            "day_of_week": day_of_week,
+                            "daily_delta": 0.0,
+                            "airport": f"{origin} - {destination}",
+                            "source_url": ret_url,
+                            "adults": 1
+                        }
+
+                        # In-memory collection; saved in high-performance batch after chunk completion
+                        record["saved_to_db"] = False
+
+                        worker_results.append(record)
+                        saved_count_for_day += 1
+
+                    logger.info(
+                        f"[RT Worker {worker_id}] [OK] Dep {dep_date_str}: Saved {saved_count_for_day} return options "
+                        f"(Cheapest: ${date_prices.get(best_ret_date)} on {best_ret_date}) | Airline: {airline}"
+                    )
+
+                    with prog_lock:
+                        prog_counter[0] += 1
+                        if on_progress:
+                            on_progress(prog_counter[0], total_days, record)
+                else:
+                    logger.warning(f"[RT Worker {worker_id}] No round-trip flights found for dep {dep_date_str}")
+                    with prog_lock:
+                        prog_counter[0] += 1
+                        if on_progress:
+                            on_progress(prog_counter[0], total_days, {"date": dep_date_str, "error": "No flights found"})
+
+            except Exception as day_err:
+                logger.error(f"[RT Worker {worker_id}] Error scraping RT date {dep_date_str}: {day_err}")
+                with prog_lock:
+                    prog_counter[0] += 1
+                    if on_progress:
+                        on_progress(prog_counter[0], total_days, {"date": dep_date_str, "error": str(day_err)})
+
+            finally:
+                try:
+                    page.close()
+                except Exception:
+                    pass
+
+            if delay_sec > 0:
+                time.sleep(delay_sec)
+
+    return worker_results
+
+
+def scrape_round_trip_range(
+    origin: str,
+    destination: str,
+    start_date: Optional[str] = None,
+    days_count: int = 30,
+    return_window_days: int = 14,
+    currency: str = "USD",
+    save_to_supabase: bool = True,
+    delay_sec: float = 0.2,
+    num_workers: int = 3,
+    on_progress: Optional[Callable[[int, int, dict], None]] = None
+) -> List[Dict]:
+    """
+    Parallel Round-Trip Scraper:
+    For each departure day i (0..days_count-1), checks return dates in window [i+1 .. i+return_window_days]
+    (e.g., 1:[2..14], 2:[3..15], ...) and captures the cheapest round trip option.
+    Divides departure days across num_workers (default 3).
+    """
+    origin = origin.upper().strip()
+    destination = destination.upper().strip()
+    route_info = get_route(origin, destination)
+
+    if start_date:
+        current_dt = datetime.strptime(start_date, "%Y-%m-%d").date()
+    else:
+        current_dt = date.today()
+
+    start_chrome()
+
+    actual_workers = min(num_workers, days_count)
+    chunk_size = (days_count + actual_workers - 1) // actual_workers
+    chunks = []
+    for w in range(actual_workers):
+        start_idx = w * chunk_size
+        end_idx = min(start_idx + chunk_size, days_count)
+        if start_idx < days_count:
+            chunks.append(list(range(start_idx, end_idx)))
+
+    logger.info(
+        f"Launching {len(chunks)} parallel RT workers for {origin}->{destination} "
+        f"({days_count} departure days, return window 1-{return_window_days}d)..."
+    )
+
+    prog_lock = threading.Lock()
+    prog_counter = [0]
+    all_results = []
+
+    t_start = time.time()
+    with ThreadPoolExecutor(max_workers=len(chunks)) as executor:
+        futures = [
+            executor.submit(
+                _scrape_round_trip_worker_chunk,
+                w_id + 1,
+                origin,
+                destination,
+                route_info,
+                current_dt,
+                chunk,
+                days_count,
+                return_window_days,
+                currency,
+                save_to_supabase,
+                delay_sec,
+                prog_lock,
+                prog_counter,
+                on_progress
+            )
+            for w_id, chunk in enumerate(chunks)
+        ]
+        for f in futures:
+            try:
+                res = f.result()
+                all_results.extend(res)
+            except Exception as e:
+                logger.error(f"RT Worker thread error: {e}")
+
+    all_results.sort(key=lambda r: r.get("departure_date", ""))
+    total_elapsed = round(time.time() - t_start, 1)
+    logger.info(f"[OK] Completed {len(all_results)} round-trip dates in parallel in {total_elapsed}s!")
+
+    if save_to_supabase and all_results:
+        try:
+            cnt = database.save_flights_batch(all_results, trip_type="round-trip")
+            for r in all_results:
+                r["saved_to_db"] = True
+            logger.info(f"[Supabase DB] Batch saved {cnt} round-trip flights for {origin}->{destination} in 1 query.")
+        except Exception as batch_err:
+            logger.error(f"[Supabase DB] Error batch saving RT {origin}->{destination}: {batch_err}")
+
+    return all_results
+
+
+def scrape_all_250_routes_round_trip(
+    save_to_supabase: bool = True,
+    routes_subset: Optional[List[Dict]] = None,
+    on_route_progress: Optional[Callable[[int, int, str, dict], None]] = None,
+    stop_checker: Optional[Callable[[], bool]] = None
+) -> Dict:
+    """Runs 30-day round-trip scans across routes using Headless Chrome."""
+    target_routes = routes_subset or TOP_250_ROUTES
+    total_routes = len(target_routes)
+    total_saved = 0
+    route_stats = {}
+
+    for r_idx, route in enumerate(target_routes):
+        if stop_checker and stop_checker():
+            logger.info("Batch cancelled.")
+            break
+
+        orig = route["origin"]
+        dest = route["destination"]
+        route_key = f"{orig}-{dest}"
+
+        def _day_cb(day_num, total_days, day_data):
+            if on_route_progress:
+                on_route_progress(r_idx + 1, total_routes, route_key, {
+                    "day": day_num,
+                    "total_days": total_days,
+                    "flight": day_data
+                })
+
+        day_results = scrape_round_trip_range(
+            origin=orig,
+            destination=dest,
+            days_count=30,
+            return_window_days=13,
             save_to_supabase=save_to_supabase,
             delay_sec=0.3,
             on_progress=_day_cb

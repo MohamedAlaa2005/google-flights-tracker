@@ -29,6 +29,9 @@ logger = logging.getLogger("Run250Routes")
 
 def main():
     parser = argparse.ArgumentParser(description="Scrape Top 250 Routes on Google Flights and sync to Supabase.")
+    parser.add_argument("--batch", type=int, choices=[1, 2, 3, 4, 5], default=None, help="Batch 1-5 (50 routes each: 1:1-50, 2:51-100, 3:101-150, 4:151-200, 5:201-250)")
+    parser.add_argument("--start-index", type=int, default=None, help="Custom starting route index (0-based)")
+    parser.add_argument("--end-index", type=int, default=None, help="Custom ending route index (0-based)")
     parser.add_argument("--limit", type=int, default=None, help="Limit number of routes to process (e.g. 5 for testing).")
     parser.add_argument("--days", type=int, default=30, help="Days to look ahead (default: 30).")
     parser.add_argument("--delay", type=float, default=0.2, help="Delay between page requests (default: 0.2s).")
@@ -39,11 +42,26 @@ def main():
     logger.info("Initializing Supabase tables and ensuring typical_price columns exist...")
     database.init_tables()
 
-    routes_to_run = TOP_250_ROUTES[:args.limit] if args.limit else TOP_250_ROUTES
+    if args.batch:
+        start_idx = (args.batch - 1) * 50
+        end_idx = start_idx + 50
+        routes_to_run = TOP_250_ROUTES[start_idx:end_idx]
+        batch_label = f"Batch {args.batch} (Routes {start_idx + 1}-{min(end_idx, len(TOP_250_ROUTES))})"
+    elif args.start_index is not None or args.end_index is not None:
+        start_idx = args.start_index or 0
+        end_idx = args.end_index if args.end_index is not None else len(TOP_250_ROUTES)
+        routes_to_run = TOP_250_ROUTES[start_idx:end_idx]
+        batch_label = f"Routes {start_idx + 1}-{end_idx}"
+    elif args.limit:
+        routes_to_run = TOP_250_ROUTES[:args.limit]
+        batch_label = f"First {args.limit} Routes"
+    else:
+        routes_to_run = TOP_250_ROUTES
+        batch_label = "All 250 Routes" 
     total_routes = len(routes_to_run)
     save_db = not args.dry_run
 
-    logger.info(f"==> Launching batch scan across {total_routes} routes ({args.days} days each) <==")
+    logger.info(f"==> Launching batch scan across {total_routes} routes [{batch_label}] ({args.days} days each) <==")
     start_time = datetime.now()
 
     def on_progress(r_idx, tot_routes, route_key, data):

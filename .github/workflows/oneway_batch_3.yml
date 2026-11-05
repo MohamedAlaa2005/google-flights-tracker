@@ -1,0 +1,41 @@
+name: One-Way - Batch 3 (Routes 101-150)
+
+on:
+  schedule:
+    # Runs every day at 12:00 PM UTC
+    - cron: '0 12 * * *'
+  workflow_dispatch:
+
+jobs:
+  scrape-oneway-batch-3:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Python Dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install Playwright & Chromium
+        run: |
+          playwright install chromium
+          playwright install-deps chromium
+
+      - name: Run One-Way Batch 3 (Routes 101-150)
+        env:
+          HEADLESS: "true"
+          SUPABASE_POOLER_HOST: ${{ secrets.SUPABASE_POOLER_HOST || 'aws-0-eu-west-1.pooler.supabase.com' }}
+          SUPABASE_PASSWORD: ${{ secrets.SUPABASE_PASSWORD || 'OlcvPogBrneuhYW7' }}
+          SUPABASE_ONE_WAY_USER: ${{ secrets.SUPABASE_ONE_WAY_USER || 'postgres.uopbpkiogtspjwiyiaxe' }}
+        run: |
+          python run_250_routes.py --batch 3
