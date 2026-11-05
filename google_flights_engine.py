@@ -982,7 +982,7 @@ def scrape_round_trip_range(
     origin: str,
     destination: str,
     start_date: Optional[str] = None,
-    days_count: int = 30,
+    days_count: int = 14,
     return_window_days: int = 14,
     currency: str = "USD",
     save_to_supabase: bool = True,
@@ -1102,8 +1102,8 @@ def scrape_all_250_routes_round_trip(
         day_results = scrape_round_trip_range(
             origin=orig,
             destination=dest,
-            days_count=30,
-            return_window_days=13,
+            days_count=14,
+            return_window_days=14,
             save_to_supabase=save_to_supabase,
             delay_sec=0.3,
             on_progress=_day_cb
