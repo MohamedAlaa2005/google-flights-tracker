@@ -36,7 +36,6 @@ def init_tables():
             cur.execute(f"""
                 CREATE TABLE IF NOT EXISTS public.{table} (
                     id TEXT PRIMARY KEY,
-                    trip_type VARCHAR(20) NOT NULL DEFAULT '{trip_type}',
                     origin_code VARCHAR(10) NOT NULL,
                     origin_city TEXT,
                     origin_country TEXT,
@@ -280,7 +279,6 @@ def save_flights_batch(flights: list, trip_type: str = "round-trip") -> int:
 
             row_tuple = (
                 unique_id,
-                trip_type,
                 orig,
                 fl.get("origin_city"),
                 fl.get("origin_country"),
@@ -321,7 +319,7 @@ def save_flights_batch(flights: list, trip_type: str = "round-trip") -> int:
         # 3. Fast atomic execute_values
         sql = f"""
             INSERT INTO public.{table} (
-                id, trip_type, origin_code, origin_city, origin_country, departure_airport_name,
+                id, origin_code, origin_city, origin_country, departure_airport_name,
                 destination_code, destination_city, destination_country, arrival_airport_name,
                 departure_date, return_date, current_lowest_price, currency,
                 price_delta, price_labels, price_rating, prediction_advice,
@@ -340,7 +338,7 @@ def save_flights_batch(flights: list, trip_type: str = "round-trip") -> int:
             cur,
             sql,
             rows_to_insert,
-            template="(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())",
+            template="(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())",
             page_size=500
         )
         conn.commit()

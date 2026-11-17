@@ -484,7 +484,6 @@ def _scrape_worker_chunk(
 
                     record = {
                         "id": f"GF_{origin}_{destination}_{target_date_str}",
-                        "trip_type": "one-way",
                         "origin_code": origin,
                         "origin_city": route_info.get("originCity", origin),
                         "origin_country": route_info.get("originCountry", "International"),
@@ -882,7 +881,6 @@ def _scrape_round_trip_worker_chunk(
 
                         record = {
                             "id": f"GF_RT_{origin}_{destination}_{dep_date_str}_{ret_d}",
-                            "trip_type": "round-trip",
                             "origin_code": origin,
                             "origin_city": route_info.get("originCity", origin),
                             "origin_country": route_info.get("originCountry", "International"),
