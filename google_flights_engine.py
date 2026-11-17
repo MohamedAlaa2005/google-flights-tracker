@@ -352,12 +352,17 @@ def read_cheapest_flight(page, flight_date_str: str) -> Optional[Dict]:
     Parses top flight candidates on page and strictly selects the TRUE MINIMUM price.
     Prevents picking high-priced sponsored / unsorted first items.
     """
+    try:
+        page.locator("li").filter(has_text=re.compile(r"\$\d")).first.wait_for(state="visible", timeout=4000)
+    except Exception:
+        pass
+
     rows = page.locator("li").filter(has_text=re.compile(r"\$\d"))
-    count = min(rows.count(), 10)
+    count = min(rows.count(), 12)
     candidates = []
     for i in range(count):
         try:
-            text = rows.nth(i).inner_text(timeout=800)
+            text = rows.nth(i).inner_text(timeout=1500)
         except Exception:
             continue
         if "AM" not in text and "PM" not in text:
