@@ -234,3 +234,4 @@ FROM public.round_trip_flights
 WHERE distance_km IS NOT NULL
 ORDER BY scraped_at DESC;
 ```
+
