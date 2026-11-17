@@ -37,51 +37,50 @@ def init_tables():
                 CREATE TABLE IF NOT EXISTS public.{table} (
                     id TEXT PRIMARY KEY,
                     trip_type VARCHAR(20) NOT NULL DEFAULT '{trip_type}',
-                    leaving TEXT NOT NULL,
                     origin_code VARCHAR(10) NOT NULL,
                     origin_city TEXT,
                     origin_country TEXT,
-                    departure_airport VARCHAR(10) NOT NULL,
                     departure_airport_name TEXT,
-                    going TEXT NOT NULL,
                     destination_code VARCHAR(10) NOT NULL,
                     destination_city TEXT,
                     destination_country TEXT,
-                    arrival_airport VARCHAR(10) NOT NULL,
                     arrival_airport_name TEXT,
-                    date DATE NOT NULL,
-                    departure_date DATE,
+                    departure_date DATE NOT NULL,
                     return_date DATE,
                     current_lowest_price NUMERIC(10, 2) NOT NULL,
                     currency VARCHAR(10) DEFAULT 'USD',
+                    price_delta NUMERIC(10, 2) DEFAULT 0,
                     price_labels TEXT,
-                    price_rating VARCHAR(20) DEFAULT 'fair',
+                    price_rating VARCHAR(20) DEFAULT 'typical',
                     prediction_advice TEXT,
-                    economy_price NUMERIC(10, 2),
-                    business_price NUMERIC(10, 2),
+                    typical_price_min NUMERIC(10, 2),
+                    typical_price_max NUMERIC(10, 2),
+                    typical_price_range VARCHAR(50),
                     airline TEXT NOT NULL,
                     airline_code VARCHAR(10),
                     airline_logo TEXT,
                     stops VARCHAR(50),
                     stop_count INT DEFAULT 0,
                     stop_details TEXT,
+                    is_self_transfer BOOLEAN DEFAULT FALSE,
                     departure_time VARCHAR(20),
                     arrival_time VARCHAR(20),
                     total_time VARCHAR(20),
                     duration_minutes INT,
-                    days_until_flight INT,
-                    airport VARCHAR(50),
+                    days_before INT,
+                    day_of_week VARCHAR(20),
                     source_url TEXT,
-                    adults INT DEFAULT 2,
+                    adults INT DEFAULT 1,
                     scraped_at TIMESTAMPTZ DEFAULT NOW()
                 );
             """)
 
-            # Add departure_date, days_before, day_of_week, daily_delta columns if missing
+            # Add columns if missing
             cur.execute(f"ALTER TABLE public.{table} ADD COLUMN IF NOT EXISTS departure_date DATE;")
+            cur.execute(f"ALTER TABLE public.{table} ADD COLUMN IF NOT EXISTS return_date DATE;")
             cur.execute(f"ALTER TABLE public.{table} ADD COLUMN IF NOT EXISTS days_before INT;")
             cur.execute(f"ALTER TABLE public.{table} ADD COLUMN IF NOT EXISTS day_of_week VARCHAR(20);")
-            cur.execute(f"ALTER TABLE public.{table} ADD COLUMN IF NOT EXISTS daily_delta NUMERIC(10, 2) DEFAULT 0;")
+            cur.execute(f"ALTER TABLE public.{table} ADD COLUMN IF NOT EXISTS price_delta NUMERIC(10, 2) DEFAULT 0;")
             cur.execute(f"ALTER TABLE public.{table} ADD COLUMN IF NOT EXISTS typical_price_min NUMERIC(10, 2);")
             cur.execute(f"ALTER TABLE public.{table} ADD COLUMN IF NOT EXISTS typical_price_max NUMERIC(10, 2);")
             cur.execute(f"ALTER TABLE public.{table} ADD COLUMN IF NOT EXISTS typical_price_range VARCHAR(50);")
@@ -101,8 +100,8 @@ def init_tables():
             cur.execute(f"""
                 UPDATE public.{table}
                 SET 
-                    day_of_week = TRIM(TO_CHAR(COALESCE(departure_date, date), 'Day')),
-                    days_before = GREATEST(0, (COALESCE(departure_date, date) - CURRENT_DATE))
+                    day_of_week = TRIM(TO_CHAR(departure_date, 'Day')),
+                    days_before = GREATEST(0, (departure_date - CURRENT_DATE))
                 WHERE day_of_week IS NULL OR day_of_week = 'Unknown';
             """)
 
@@ -140,7 +139,7 @@ def init_tables():
                     price NUMERIC(10, 2) NOT NULL,
                     price_rating VARCHAR(20),
                     airline TEXT,
-                    daily_delta NUMERIC(10, 2) DEFAULT 0,
+                    price_delta NUMERIC(10, 2) DEFAULT 0,
                     recorded_at TIMESTAMPTZ DEFAULT NOW()
                 );
             """)
@@ -195,21 +194,38 @@ def save_flights_batch(flights: list, trip_type: str = "round-trip") -> int:
             except Exception:
                 pass
 
-            # Pre-fetch latest recorded prices to compute daily_delta
+            # Pre-fetch latest recorded prices to compute price_delta
             try:
-                cur.execute(
-                    f"""
-                    SELECT DISTINCT ON (origin_code, destination_code, departure_date)
-                           origin_code, destination_code, departure_date, current_lowest_price
-                    FROM public.{table}
-                    WHERE (origin_code, destination_code) IN %s
-                    ORDER BY origin_code, destination_code, departure_date, scraped_at DESC
-                    """,
-                    (tuple(route_pairs),)
-                )
-                for r in cur.fetchall():
-                    d_str = str(r[2])[:10] if r[2] else ""
-                    prev_prices[(r[0], r[1], d_str)] = float(r[3]) if r[3] is not None else None
+                if trip_type == "round-trip":
+                    cur.execute(
+                        f"""
+                        SELECT DISTINCT ON (origin_code, destination_code, departure_date, return_date)
+                               origin_code, destination_code, departure_date, return_date, current_lowest_price
+                        FROM public.{table}
+                        WHERE (origin_code, destination_code) IN %s
+                          AND return_date IS NOT NULL
+                        ORDER BY origin_code, destination_code, departure_date, return_date, scraped_at DESC
+                        """,
+                        (tuple(route_pairs),)
+                    )
+                    for r in cur.fetchall():
+                        d_str = str(r[2])[:10] if r[2] else ""
+                        ret_str = str(r[3])[:10] if r[3] else ""
+                        prev_prices[(r[0], r[1], d_str, ret_str)] = float(r[4]) if r[4] is not None else None
+                else:
+                    cur.execute(
+                        f"""
+                        SELECT DISTINCT ON (origin_code, destination_code, departure_date)
+                               origin_code, destination_code, departure_date, current_lowest_price
+                        FROM public.{table}
+                        WHERE (origin_code, destination_code) IN %s
+                        ORDER BY origin_code, destination_code, departure_date, scraped_at DESC
+                        """,
+                        (tuple(route_pairs),)
+                    )
+                    for r in cur.fetchall():
+                        d_str = str(r[2])[:10] if r[2] else ""
+                        prev_prices[(r[0], r[1], d_str)] = float(r[3]) if r[3] is not None else None
             except Exception:
                 pass
 
@@ -218,15 +234,18 @@ def save_flights_batch(flights: list, trip_type: str = "round-trip") -> int:
         rows_to_insert = []
 
         for idx, fl in enumerate(flights):
-            dep_str = str(fl.get("departure_date") or fl.get("date"))[:10]
-            ret_str = str(fl.get("return_date"))[:10] if fl.get("return_date") else None
+            dep_str = str(fl.get("departure_date") or fl.get("date") or "")[:10]
+            ret_str = str(fl.get("return_date") or "")[:10] if fl.get("return_date") else None
             orig = fl["origin_code"]
             dest = fl["destination_code"]
             curr_price = float(fl.get("current_lowest_price") or 0.0)
 
-            # Daily delta
-            prev_p = prev_prices.get((orig, dest, dep_str))
-            daily_delta = round(curr_price - prev_p, 2) if prev_p is not None else 0.0
+            # Price delta calculation
+            if trip_type == "round-trip":
+                prev_p = prev_prices.get((orig, dest, dep_str, ret_str or ""))
+            else:
+                prev_p = prev_prices.get((orig, dest, dep_str))
+            price_delta = round(curr_price - prev_p, 2) if (prev_p is not None and prev_p > 0) else 0.0
 
             # Dates
             try:
@@ -262,31 +281,25 @@ def save_flights_batch(flights: list, trip_type: str = "round-trip") -> int:
             row_tuple = (
                 unique_id,
                 trip_type,
-                fl.get("leaving") or f"{orig} to {dest}",
                 orig,
                 fl.get("origin_city"),
                 fl.get("origin_country"),
-                fl.get("departure_airport") or orig,
                 fl.get("departure_airport_name"),
-                fl.get("going") or f"{dest}",
                 dest,
                 fl.get("destination_city"),
                 fl.get("destination_country"),
-                fl.get("arrival_airport") or dest,
                 fl.get("arrival_airport_name"),
-                dep_str,
                 dep_str,
                 ret_str,
                 curr_price,
                 fl.get("currency", "USD"),
+                price_delta,
                 fl.get("price_labels", "Prices are currently typical"),
                 fl.get("price_rating", "typical"),
                 fl.get("prediction_advice"),
                 t_min,
                 t_max,
                 t_range,
-                curr_price,
-                fl.get("business_price"),
                 fl.get("airline") or "Multiple Airlines",
                 fl.get("airline_code"),
                 fl.get("airline_logo"),
@@ -298,11 +311,8 @@ def save_flights_batch(flights: list, trip_type: str = "round-trip") -> int:
                 fl.get("arrival_time"),
                 fl.get("total_time") or "N/A",
                 fl.get("duration_minutes"),
-                fl.get("days_until_flight", days_before),
                 days_before,
                 day_of_week,
-                daily_delta,
-                fl.get("airport") or f"{orig} - {dest}",
                 fl.get("source_url"),
                 fl.get("adults", 1)
             )
@@ -311,28 +321,26 @@ def save_flights_batch(flights: list, trip_type: str = "round-trip") -> int:
         # 3. Fast atomic execute_values
         sql = f"""
             INSERT INTO public.{table} (
-                id, trip_type, leaving, origin_code, origin_city, origin_country,
-                departure_airport, departure_airport_name,
-                going, destination_code, destination_city, destination_country,
-                arrival_airport, arrival_airport_name,
-                date, departure_date, return_date, current_lowest_price, currency,
-                price_labels, price_rating, prediction_advice,
+                id, trip_type, origin_code, origin_city, origin_country, departure_airport_name,
+                destination_code, destination_city, destination_country, arrival_airport_name,
+                departure_date, return_date, current_lowest_price, currency,
+                price_delta, price_labels, price_rating, prediction_advice,
                 typical_price_min, typical_price_max, typical_price_range,
-                economy_price, business_price,
                 airline, airline_code, airline_logo, stops, stop_count, stop_details, is_self_transfer,
-                departure_time, arrival_time, total_time, duration_minutes, days_until_flight,
-                days_before, day_of_week, daily_delta,
-                airport, source_url, adults, scraped_at
+                departure_time, arrival_time, total_time, duration_minutes,
+                days_before, day_of_week,
+                source_url, adults, scraped_at
             ) VALUES %s
             ON CONFLICT (id) DO UPDATE SET
                 current_lowest_price = EXCLUDED.current_lowest_price,
+                price_delta = EXCLUDED.price_delta,
                 scraped_at = NOW();
         """
         execute_values(
             cur,
             sql,
             rows_to_insert,
-            template="(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())",
+            template="(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())",
             page_size=500
         )
         conn.commit()
@@ -352,7 +360,7 @@ def get_flights(trip_type: str = "round-trip", limit: int = 250):
     conn = get_connection(trip_type)
     try:
         cur = conn.cursor(cursor_factory=RealDictCursor)
-        cur.execute(f"SELECT * FROM public.{table} ORDER BY scraped_at DESC, COALESCE(departure_date, date) ASC LIMIT %s;", (limit,))
+        cur.execute(f"SELECT * FROM public.{table} ORDER BY scraped_at DESC, departure_date ASC LIMIT %s;", (limit,))
         rows = cur.fetchall()
         cur.close()
         return [dict(r) for r in rows]

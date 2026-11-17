@@ -598,7 +598,7 @@ HTML_CONTENT = """<!DOCTYPE html>
         }
 
         tbody.innerHTML = flights.map(f => {
-          const formattedDate = f.departure_date || f.date || 'N/A';
+          const formattedDate = f.departure_date || 'N/A';
           const price = Number(f.current_lowest_price).toFixed(0);
           const deepLink = f.source_url || `https://www.google.com/travel/flights?q=Flights%20to%20${f.destination_code}%20from%20${f.origin_code}%20on%20${formattedDate}`;
 
@@ -619,7 +619,7 @@ HTML_CONTENT = """<!DOCTYPE html>
             }
           }
 
-          const deltaNum = Number(f.daily_delta || 0);
+          const deltaNum = Number(f.price_delta !== undefined ? f.price_delta : 0);
           let deltaBadge = `<span class="text-slate-400 font-mono text-xs">$0</span>`;
           if (deltaNum < 0) {
             deltaBadge = `<span class="inline-flex items-center text-emerald-600 font-bold font-mono text-xs">▼ $${Math.abs(deltaNum)}</span>`;
@@ -965,7 +965,7 @@ HTML_CONTENT = """<!DOCTYPE html>
     function exportTableToCSV() {
       const rows = document.querySelectorAll('#flights-table-body tr');
       if (!rows.length) return alert('No flights to export');
-      let csv = 'date,day_of_week,days_before,route,airline,schedule,stops,is_self_transfer,price_usd,typical_range,daily_delta,price_label_insights\\n';
+      let csv = 'departure_date,day_of_week,days_before,route,airline,schedule,stops,is_self_transfer,price_usd,typical_range,price_delta,price_label_insights\\n';
       rows.forEach(tr => {
         const cols = tr.querySelectorAll('td');
         if (cols.length >= 12) {
