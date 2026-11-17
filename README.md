@@ -1,29 +1,67 @@
 # Google Flights Price Intelligence & Automated Tracker
 
-An automated flight price tracker, scraping engine, and intelligence dashboard powered by **Python**, **Playwright**, and **Supabase**.
+An enterprise-grade, automated flight price scraping engine, database pipeline, and intelligence dashboard powered by **Python**, **Playwright**, and **Supabase PostgreSQL**.
+
+Continuously monitors and predicts airfares across the **Top 250 global flight routes** for both **One-Way** (30 days) and **Round-Trip** (14 days with dynamic return stay windows), tracking over **374,000+ validated flight records**.
+
+> 📖 **Full Project Summary & Technical Architecture:** See [PROJECT_SUMMARY.md](PROJECT_SUMMARY.md)  
+> 🧠 **Machine Learning Feature Engineering Guide:** See [FEATURE_ENGINEERING.md](FEATURE_ENGINEERING.md)
+
+---
 
 ## Key Features
 
-- **3 Parallel Playwright Workers:** 30-day scans are divided into three 10-day chunks running concurrently for 3x speedup.
-- **Genuine Cheapest Selection:** Automatically switches to Google Flights' "Cheapest" tab and extracts the true lowest verified fare.
-- **Google ML Range Evaluation:** Extracts Google's predicted typical price range (e.g. `$115–$205`) and re-evaluates lowest fares against the range (`low`, `typical`, `high`).
-- **Cross-Date Range Inheritance:** Caches and backfills typical price ranges across all dates for the same route.
-- **Automated 12:00 PM Daily Scheduler:** Automatically scans all 250 top global routes every day at 12:00 PM and synchronizes verified lowest fares to Supabase.
-- **Full Web Dashboard:** FastAPI-based UI with interactive search, filters, daily delta indicators, direct Google Flights deep links, and CSV export.
-- **Docker-Ready:** Includes production `Dockerfile` and `docker-compose.yml` pre-configured with Google Chrome and Playwright dependencies.
+- **Dual-Trip Scraping Engine (`google_flights_engine.py`):**
+  - **One-Way:** Scrapes 30 days ahead across 250 routes.
+  - **Round-Trip:** Scrapes dynamic departure + multi-day return stay windows.
+  - **Multi-Threaded Parallelism:** 3 concurrent Playwright workers per route chunk for 3x–5x speedup.
+  - **Genuine Lowest Price Selection:** Automatically selects Google Flights' "Cheapest" tab and parses the true lowest verified fare.
+  - **AJAX Visibility Synchronization:** Built-in DOM waits eliminate race conditions on high-latency international routes.
+- **Official Google Price Intelligence:**
+  - Extracts typical price brackets (`typical_price_min`, `typical_price_max`, `typical_price_range`).
+  - Evaluates fares against Google's predictions (`cheapest`, `low`, `typical`, `high`) with explanatory advice.
+  - Cross-date typical range caching and automatic inheritance.
+- **Ground-Truth Physical Metrics:**
+  - **Flight Distance (`distance_km`):** Automatically computes Great Circle distance using the Haversine formula and 143 airport GPS coordinates (`airports_coords.json`). 100% backfilled across all 374k+ existing rows.
+  - **Carbon Emissions (`co2_kg`):** Live extraction of aircraft emissions directly from Google Flights flight cards.
+- **High-Performance Atomic Database Pipeline (`database.py`):**
+  - **Dual Supabase Databases:** Dedicated connection-pooled projects for One-Way and Round-Trip.
+  - **Atomic Batch Ingestion:** High-speed `execute_values` insertion eliminates database lock contention and connection pool exhaustion.
+  - **Dynamic Price Delta:** Automatically computes `price_delta = round(curr_price - prev_price, 2)` against historical snapshots.
+  - **Canonical 38-Column Schema:** Clean, normalized ground-truth schema without duplicate or legacy columns.
+- **10 Sharded GitHub Actions Workflows (`.github/workflows/`):**
+  - 5 One-Way workflows (50 routes each).
+  - 5 Round-Trip workflows (50 routes each).
+  - Automated daily cron triggers with manual dispatch support.
+- **Interactive Web Dashboard (`web_app.py`):**
+  - Real-time flight search, route filters, live SSE scraper logs, price delta badges, Google Flights deep links, and one-click CSV dataset export.
+  - Cloud-ready for Vercel and Docker deployment.
 
-## Architecture
+---
 
+## Architecture Overview
+
+```mermaid
+flowchart LR
+    GHA["10x GitHub Actions Workflows<br/>(5 One-Way + 5 Round-Trip)"] --> SCRAPER["Playwright Parallel Engine<br/>(google_flights_engine.py)"]
+    SCRAPER --> DB_PIPE["Atomic Batch Engine<br/>(database.py)"]
+    DB_PIPE --> SUPABASE[("Dual Supabase PostgreSQL<br/>(374k+ Flights)")]
+    SUPABASE --> DASHBOARD["FastAPI Web Dashboard (web_app.py)"]
+    SUPABASE --> ML["ML Feature Pipeline (FEATURE_ENGINEERING.md)"]
 ```
-├── web_app.py                # FastAPI Dashboard & REST API
-├── google_flights_engine.py  # 3-Worker Playwright scraper & Google Flights Price Insights extractor
-├── database.py               # Supabase PostgreSQL synchronization & range inheritance
-├── scheduler_service.py      # Automated 12:00 PM background schedule runner
-├── run_250_routes.py         # Standalone Top 250 routes batch CLI runner
-├── routes.py / routes.json   # Top 250 global flight route catalog
-├── Dockerfile                # Production container definition (Playwright + Chrome)
-└── docker-compose.yml        # Docker compose configuration
-```
+
+---
+
+## Canonical Database Schema (38 Columns)
+
+1. **Route & Airport:** `id`, `origin_code`, `destination_code`, `origin_city`, `destination_city`, `origin_country`, `destination_country`, `departure_airport_name`, `arrival_airport_name`
+2. **Timing & Schedule:** `departure_date`, `return_date`, `departure_time`, `arrival_time`, `total_time`, `duration_minutes`, `days_before`, `day_of_week`
+3. **Pricing & Intelligence:** `current_lowest_price`, `currency`, `price_delta`, `price_rating`, `price_labels`, `prediction_advice`, `typical_price_min`, `typical_price_max`, `typical_price_range`
+4. **Flight Details:** `airline`, `airline_code`, `airline_logo`, `stops`, `stop_count`, `stop_details`, `is_self_transfer`, `adults`, `source_url`
+5. **Ground Truth Metrics:** `distance_km`, `co2_kg`
+6. **Audit Metadata:** `scraped_at`
+
+---
 
 ## Quick Start
 
@@ -33,10 +71,17 @@ pip install -r requirements.txt
 playwright install chromium
 ```
 
-### 2. Configure Environment
-Copy `.env.example` to `.env` and fill in your Supabase database credentials:
+### 2. Configure Environment (`.env`)
 ```bash
 cp .env.example .env
+```
+Ensure your Supabase connection parameters are set:
+```env
+SUPABASE_POOLER_HOST=aws-0-eu-west-1.pooler.supabase.com
+SUPABASE_PORT=6543
+ONE_WAY_USER=postgres.uopbpkiogtspjwiyiaxe
+ROUND_TRIP_USER=postgres.afqmwnbuvsothamcbdpv
+PASSWORD=your_supabase_password
 ```
 
 ### 3. Run Web Dashboard
@@ -45,29 +90,22 @@ python web_app.py
 ```
 Open [http://localhost:3000](http://localhost:3000) in your browser.
 
-### 4. Run Top 250 Routes Batch CLI
+### 4. Run Scraper CLI
 ```bash
-# Full 250 routes
-python run_250_routes.py
+# Scrape single flight
+python -c "import google_flights_engine; print(google_flights_engine.scrape_cheapest_flight('CAI', 'DXB', '2026-12-01'))"
 
-# Test first 5 routes
+# Scrape batch routes
 python run_250_routes.py --limit 5
 ```
 
-### 5. Deploy to Vercel (Cloud Dashboard)
-
-The project is pre-configured for Vercel deployment (`vercel.json` + `api/index.py`):
-1. Push this repository to your GitHub account.
-2. Go to [Vercel](https://vercel.com) and click **"Add New Project"**.
-3. Import your `google-flights-tracker` repository.
-4. (Optional) In **Environment Variables**, add:
-   - `SUPABASE_PASSWORD`
-   - `SUPABASE_ONE_WAY_USER`
-   - `SUPABASE_POOLER_HOST`
-5. Click **Deploy**. Your dashboard will be live at `https://<your-project>.vercel.app` with real-time Supabase flight queries, search, filtering, and CSV export!
-
-### 6. Run with Docker (Full Scraper & Dashboard)
+### 5. Run with Docker
 ```bash
 docker compose up -d
 ```
 
+---
+
+## License & Attribution
+
+Developed for flight price intelligence, historical volatility tracking, and machine learning price prediction modeling.
