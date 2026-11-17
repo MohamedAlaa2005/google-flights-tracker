@@ -2,6 +2,8 @@ import os
 import sys
 import re
 import time
+import math
+import json
 import logging
 import subprocess
 import threading
@@ -46,6 +48,33 @@ PRICE_RE = re.compile(r"^\$(\d[\d,]*)$")
 # Thread-safe in-memory cache for route typical price ranges
 ROUTE_RANGE_CACHE: Dict = {}
 CACHE_LOCK = threading.Lock()
+
+AIRPORTS_COORDS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "airports_coords.json")
+AIRPORT_COORDS: Dict = {}
+if os.path.exists(AIRPORTS_COORDS_FILE):
+    try:
+        with open(AIRPORTS_COORDS_FILE, "r", encoding="utf-8") as f:
+            AIRPORT_COORDS = json.load(f)
+    except Exception:
+        pass
+
+
+def calculate_distance_km(orig: str, dest: str) -> Optional[int]:
+    """Calculates Great Circle distance between two airports in km using Haversine formula."""
+    if not orig or not dest:
+        return None
+    o = AIRPORT_COORDS.get(orig.upper().strip())
+    d = AIRPORT_COORDS.get(dest.upper().strip())
+    if not o or not d:
+        return None
+    lat1, lon1 = float(o["lat"]), float(o["lon"])
+    lat2, lon2 = float(d["lat"]), float(d["lon"])
+    R = 6371.0
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = math.sin(dlat / 2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2)**2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return int(round(R * c))
 
 
 def find_chrome():
@@ -521,6 +550,8 @@ def _scrape_worker_chunk(
                         "duration_minutes": best["duration_min"],
                         "days_before": days_before,
                         "day_of_week": day_of_week,
+                        "distance_km": calculate_distance_km(origin, destination),
+                        "co2_kg": best.get("co2_kg"),
                         "source_url": url,
                         "adults": 1
                     }
@@ -918,6 +949,8 @@ def _scrape_round_trip_worker_chunk(
                             "duration_minutes": card_dur,
                             "days_before": days_before,
                             "day_of_week": day_of_week,
+                            "distance_km": calculate_distance_km(origin, destination),
+                            "co2_kg": best_flight.get("co2_kg") if best_flight else None,
                             "source_url": ret_url,
                             "adults": 1
                         }

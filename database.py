@@ -68,6 +68,8 @@ def init_tables():
                     duration_minutes INT,
                     days_before INT,
                     day_of_week VARCHAR(20),
+                    distance_km INT,
+                    co2_kg INT,
                     source_url TEXT,
                     adults INT DEFAULT 1,
                     scraped_at TIMESTAMPTZ DEFAULT NOW()
@@ -84,6 +86,8 @@ def init_tables():
             cur.execute(f"ALTER TABLE public.{table} ADD COLUMN IF NOT EXISTS typical_price_max NUMERIC(10, 2);")
             cur.execute(f"ALTER TABLE public.{table} ADD COLUMN IF NOT EXISTS typical_price_range VARCHAR(50);")
             cur.execute(f"ALTER TABLE public.{table} ADD COLUMN IF NOT EXISTS is_self_transfer BOOLEAN DEFAULT FALSE;")
+            cur.execute(f"ALTER TABLE public.{table} ADD COLUMN IF NOT EXISTS distance_km INT;")
+            cur.execute(f"ALTER TABLE public.{table} ADD COLUMN IF NOT EXISTS co2_kg INT;")
 
             # Backfill any flights with self transfer in airline or details
             cur.execute(f"""
@@ -311,6 +315,8 @@ def save_flights_batch(flights: list, trip_type: str = "round-trip") -> int:
                 fl.get("duration_minutes"),
                 days_before,
                 day_of_week,
+                fl.get("distance_km"),
+                fl.get("co2_kg"),
                 fl.get("source_url"),
                 fl.get("adults", 1)
             )
@@ -326,19 +332,21 @@ def save_flights_batch(flights: list, trip_type: str = "round-trip") -> int:
                 typical_price_min, typical_price_max, typical_price_range,
                 airline, airline_code, airline_logo, stops, stop_count, stop_details, is_self_transfer,
                 departure_time, arrival_time, total_time, duration_minutes,
-                days_before, day_of_week,
+                days_before, day_of_week, distance_km, co2_kg,
                 source_url, adults, scraped_at
             ) VALUES %s
             ON CONFLICT (id) DO UPDATE SET
                 current_lowest_price = EXCLUDED.current_lowest_price,
                 price_delta = EXCLUDED.price_delta,
+                distance_km = COALESCE(EXCLUDED.distance_km, public.{table}.distance_km),
+                co2_kg = COALESCE(EXCLUDED.co2_kg, public.{table}.co2_kg),
                 scraped_at = NOW();
         """
         execute_values(
             cur,
             sql,
             rows_to_insert,
-            template="(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())",
+            template="(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())",
             page_size=500
         )
         conn.commit()
