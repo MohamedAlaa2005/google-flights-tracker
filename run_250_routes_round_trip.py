@@ -30,7 +30,7 @@ logger = logging.getLogger("Run250RoutesRoundTrip")
 
 def main():
     parser = argparse.ArgumentParser(description="Scrape Top 250 Routes Round-Trip on Google Flights and sync to Supabase.")
-    parser.add_argument("--batch", type=int, choices=[1, 2, 3, 4, 5], default=None, help="Batch 1-5 (50 routes each: 1:1-50, 2:51-100, 3:101-150, 4:151-200, 5:201-250)")
+    parser.add_argument("--batch", type=int, choices=[1, 2, 3], default=None, help="Batch 1-3 (1: 1-100, 2: 101-200, 3: 201-250)")
     parser.add_argument("--start-index", type=int, default=None, help="Custom starting route index (0-based)")
     parser.add_argument("--end-index", type=int, default=None, help="Custom ending route index (0-based)")
     parser.add_argument("--limit", type=int, default=None, help="Limit number of routes to process (e.g. 5 for testing).")
@@ -46,11 +46,18 @@ def main():
     except Exception as init_err:
         logger.warning(f"Database schema init check bypassed: {init_err}")
 
-    if args.batch:
-        start_idx = (args.batch - 1) * 50
-        end_idx = start_idx + 50
+    if args.batch == 1:
+        start_idx, end_idx = 0, 100
         routes_to_run = TOP_250_ROUTES[start_idx:end_idx]
-        batch_label = f"Batch {args.batch} (Routes {start_idx + 1}-{min(end_idx, len(TOP_250_ROUTES))})"
+        batch_label = "Batch 1 (Routes 1-100)"
+    elif args.batch == 2:
+        start_idx, end_idx = 100, 200
+        routes_to_run = TOP_250_ROUTES[start_idx:end_idx]
+        batch_label = "Batch 2 (Routes 101-200)"
+    elif args.batch == 3:
+        start_idx, end_idx = 200, 250
+        routes_to_run = TOP_250_ROUTES[start_idx:end_idx]
+        batch_label = "Batch 3 (Routes 201-250)"
     elif args.start_index is not None or args.end_index is not None:
         start_idx = args.start_index or 0
         end_idx = args.end_index if args.end_index is not None else len(TOP_250_ROUTES)
