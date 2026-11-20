@@ -3,7 +3,7 @@ name: Round-Trip - Batch 1 (Routes 1-50)
 on:
   schedule:
     # Runs every day at 12:00 PM UTC
-    - cron: '0 12 * * *'
+    - cron: '15 13 * * *'
   workflow_dispatch:
 
 jobs:

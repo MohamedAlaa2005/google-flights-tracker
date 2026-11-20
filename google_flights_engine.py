@@ -77,6 +77,52 @@ def calculate_distance_km(orig: str, dest: str) -> Optional[int]:
     return int(round(R * c))
 
 
+CHROME_PROC = None
+
+
+def kill_chrome():
+    """Terminates Chrome process and cleans stale profile lock files."""
+    global CHROME_PROC
+    if CHROME_PROC:
+        try:
+            CHROME_PROC.terminate()
+            CHROME_PROC.wait(timeout=3)
+        except Exception:
+            try:
+                CHROME_PROC.kill()
+            except Exception:
+                pass
+        CHROME_PROC = None
+
+    # Kill any lingering chrome processes bound to remote-debugging-port
+    try:
+        if sys.platform == "win32":
+            subprocess.run(["taskkill", "/F", "/IM", "chrome.exe", "/T"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            subprocess.run(["pkill", "-9", "-f", f"remote-debugging-port={PORT}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(["pkill", "-9", "-f", "chrome"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(["pkill", "-9", "-f", "chromium"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+
+    # Clean Singleton locks so Chrome never gets blocked on restart
+    for lock_name in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
+        lock_file = os.path.join(PROFILE_DIR, lock_name)
+        if os.path.exists(lock_file):
+            try:
+                os.remove(lock_file)
+            except Exception:
+                pass
+    time.sleep(0.5)
+
+
+def restart_chrome():
+    """Cleanly restarts Chrome to release accumulated memory."""
+    logger.info("Recycling Chrome process for clean memory state...")
+    kill_chrome()
+    return start_chrome()
+
+
 def find_chrome():
     for path in CHROME_CANDIDATES:
         if path and os.path.exists(path):
@@ -101,12 +147,22 @@ def chrome_ready():
 
 def start_chrome():
     """Starts Chrome with optimized memory settings and CDP enabled."""
+    global CHROME_PROC
     if chrome_ready():
-        return None
+        return CHROME_PROC
+
+    # Clean stale lock files before launching
+    for lock_name in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
+        lock_file = os.path.join(PROFILE_DIR, lock_name)
+        if os.path.exists(lock_file):
+            try:
+                os.remove(lock_file)
+            except Exception:
+                pass
 
     chrome_path = find_chrome()
     if not chrome_path:
-        raise FileNotFoundError("Could not find chrome.exe.")
+        raise FileNotFoundError("Could not find chrome.exe or chromium.")
 
     args = [
         chrome_path,
@@ -130,14 +186,23 @@ def start_chrome():
     else:
         args += ["--start-minimized"]
 
-    proc = subprocess.Popen(args)
+    CHROME_PROC = subprocess.Popen(args)
 
-    for _ in range(30):
+    for _ in range(35):
         if chrome_ready():
-            return proc
-        time.sleep(0.4)
+            return CHROME_PROC
+        time.sleep(0.3)
 
-    raise TimeoutError("Chrome launched but port 9222 not ready.")
+    # If first attempt timed out, kill zombies and retry once
+    logger.warning("Port 9222 not ready on first attempt. Killing zombies and retrying...")
+    kill_chrome()
+    CHROME_PROC = subprocess.Popen(args)
+    for _ in range(35):
+        if chrome_ready():
+            return CHROME_PROC
+        time.sleep(0.3)
+
+    raise TimeoutError("Chrome launched but port 9222 not ready after retry.")
 
 
 def click_if_exists(locator, timeout=1500):
@@ -684,43 +749,56 @@ def scrape_30_days_range(
 def scrape_all_250_routes(
     save_to_supabase: bool = True,
     routes_subset: Optional[List[Dict]] = None,
+    days_count: int = 30,
     on_route_progress: Optional[Callable[[int, int, str, dict], None]] = None,
     stop_checker: Optional[Callable[[], bool]] = None
 ) -> Dict:
-    """Runs 30-day scans across all routes using Headless Chrome."""
+    """Runs 30-day scans across all routes using Headless Chrome with resilience & auto-recovery."""
     target_routes = routes_subset or TOP_250_ROUTES
     total_routes = len(target_routes)
     total_saved = 0
     route_stats = {}
 
-    for r_idx, route in enumerate(target_routes):
-        if stop_checker and stop_checker():
-            logger.info("Batch cancelled.")
-            break
+    try:
+        for r_idx, route in enumerate(target_routes):
+            if stop_checker and stop_checker():
+                logger.info("Batch cancelled.")
+                break
 
-        orig = route["origin"]
-        dest = route["destination"]
-        route_key = f"{orig}-{dest}"
+            # Periodically recycle Chrome to prevent memory bloat on CI/CD runners
+            if r_idx > 0 and r_idx % 15 == 0:
+                restart_chrome()
 
-        def _day_cb(day_num, total_days, day_data):
-            if on_route_progress:
-                on_route_progress(r_idx + 1, total_routes, route_key, {
-                    "day": day_num,
-                    "total_days": total_days,
-                    "flight": day_data
-                })
+            orig = route["origin"]
+            dest = route["destination"]
+            route_key = f"{orig}-{dest}"
 
-        day_results = scrape_30_days_range(
-            origin=orig,
-            destination=dest,
-            days_count=30,
-            save_to_supabase=save_to_supabase,
-            delay_sec=0.3,
-            on_progress=_day_cb
-        )
+            def _day_cb(day_num, total_days, day_data):
+                if on_route_progress:
+                    on_route_progress(r_idx + 1, total_routes, route_key, {
+                        "day": day_num,
+                        "total_days": total_days,
+                        "flight": day_data
+                    })
 
-        total_saved += len(day_results)
-        route_stats[route_key] = len(day_results)
+            try:
+                day_results = scrape_30_days_range(
+                    origin=orig,
+                    destination=dest,
+                    days_count=days_count,
+                    save_to_supabase=save_to_supabase,
+                    delay_sec=0.3,
+                    on_progress=_day_cb
+                )
+                total_saved += len(day_results)
+                route_stats[route_key] = len(day_results)
+            except Exception as route_err:
+                logger.error(f"[ROUTE ERROR] Route {r_idx + 1}/{total_routes} ({route_key}) failed: {route_err}. Recovering Chrome and continuing...")
+                restart_chrome()
+                route_stats[route_key] = 0
+
+    finally:
+        kill_chrome()
 
     return {
         "total_routes_processed": len(route_stats),
@@ -1091,44 +1169,58 @@ def scrape_round_trip_range(
 def scrape_all_250_routes_round_trip(
     save_to_supabase: bool = True,
     routes_subset: Optional[List[Dict]] = None,
+    days_count: int = 14,
+    return_window_days: int = 14,
     on_route_progress: Optional[Callable[[int, int, str, dict], None]] = None,
     stop_checker: Optional[Callable[[], bool]] = None
 ) -> Dict:
-    """Runs 30-day round-trip scans across routes using Headless Chrome."""
+    """Runs round-trip scans across routes using Headless Chrome with resilience & auto-recovery."""
     target_routes = routes_subset or TOP_250_ROUTES
     total_routes = len(target_routes)
     total_saved = 0
     route_stats = {}
 
-    for r_idx, route in enumerate(target_routes):
-        if stop_checker and stop_checker():
-            logger.info("Batch cancelled.")
-            break
+    try:
+        for r_idx, route in enumerate(target_routes):
+            if stop_checker and stop_checker():
+                logger.info("Batch cancelled.")
+                break
 
-        orig = route["origin"]
-        dest = route["destination"]
-        route_key = f"{orig}-{dest}"
+            # Periodically recycle Chrome to prevent memory bloat on CI/CD runners
+            if r_idx > 0 and r_idx % 15 == 0:
+                restart_chrome()
 
-        def _day_cb(day_num, total_days, day_data):
-            if on_route_progress:
-                on_route_progress(r_idx + 1, total_routes, route_key, {
-                    "day": day_num,
-                    "total_days": total_days,
-                    "flight": day_data
-                })
+            orig = route["origin"]
+            dest = route["destination"]
+            route_key = f"{orig}-{dest}"
 
-        day_results = scrape_round_trip_range(
-            origin=orig,
-            destination=dest,
-            days_count=14,
-            return_window_days=14,
-            save_to_supabase=save_to_supabase,
-            delay_sec=0.3,
-            on_progress=_day_cb
-        )
+            def _day_cb(day_num, total_days, day_data):
+                if on_route_progress:
+                    on_route_progress(r_idx + 1, total_routes, route_key, {
+                        "day": day_num,
+                        "total_days": total_days,
+                        "flight": day_data
+                    })
 
-        total_saved += len(day_results)
-        route_stats[route_key] = len(day_results)
+            try:
+                day_results = scrape_round_trip_range(
+                    origin=orig,
+                    destination=dest,
+                    days_count=days_count,
+                    return_window_days=return_window_days,
+                    save_to_supabase=save_to_supabase,
+                    delay_sec=0.3,
+                    on_progress=_day_cb
+                )
+                total_saved += len(day_results)
+                route_stats[route_key] = len(day_results)
+            except Exception as route_err:
+                logger.error(f"[ROUTE ERROR] RT Route {r_idx + 1}/{total_routes} ({route_key}) failed: {route_err}. Recovering Chrome and continuing...")
+                restart_chrome()
+                route_stats[route_key] = 0
+
+    finally:
+        kill_chrome()
 
     return {
         "total_routes_processed": len(route_stats),

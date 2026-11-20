@@ -15,14 +15,21 @@ PORT = 6543
 
 def get_connection(trip_type: str = "round-trip"):
     user = ROUND_TRIP_USER if trip_type == "round-trip" else ONE_WAY_USER
-    return psycopg2.connect(
-        host=HOST,
-        user=user,
-        password=PASSWORD,
-        dbname="postgres",
-        port=PORT,
-        sslmode="require"
-    )
+    for attempt in range(3):
+        try:
+            return psycopg2.connect(
+                host=HOST,
+                user=user,
+                password=PASSWORD,
+                dbname="postgres",
+                port=PORT,
+                sslmode="require",
+                connect_timeout=15
+            )
+        except Exception as e:
+            if attempt == 2:
+                raise
+            time.sleep(1.5 * (attempt + 1))
 
 def init_tables():
     """Ensures required tables and departure_date columns exist on Supabase."""

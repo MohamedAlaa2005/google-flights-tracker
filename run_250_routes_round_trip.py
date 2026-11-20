@@ -40,9 +40,11 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="Do not persist to Supabase.")
     args = parser.parse_args()
 
-    # Ensure Supabase schema & columns exist
-    logger.info("Initializing Supabase tables (round_trip_flights) and ensuring columns exist...")
-    database.init_tables()
+    # Ensure Supabase schema & columns exist (catch locks so worker never crashes on startup)
+    try:
+        database.init_tables()
+    except Exception as init_err:
+        logger.warning(f"Database schema init check bypassed: {init_err}")
 
     if args.batch:
         start_idx = (args.batch - 1) * 50
@@ -81,6 +83,8 @@ def main():
     stats = google_flights_engine.scrape_all_250_routes_round_trip(
         save_to_supabase=save_db,
         routes_subset=routes_to_run,
+        days_count=args.days,
+        return_window_days=args.return_window,
         on_route_progress=on_progress
     )
 

@@ -3,7 +3,7 @@ name: One-Way - Batch 2 (Routes 51-100)
 on:
   schedule:
     # Runs every day at 12:00 PM UTC
-    - cron: '0 12 * * *'
+    - cron: '15 12 * * *'
   workflow_dispatch:
 
 jobs:
