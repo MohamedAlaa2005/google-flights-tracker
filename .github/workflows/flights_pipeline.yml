@@ -1,0 +1,118 @@
+name: Google Flights Scraper Pipeline
+
+on:
+  schedule:
+    # Runs daily at 12:00 PM UTC
+    - cron: '0 12 * * *'
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Select what to scrape'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - oneway
+          - roundtrip
+
+jobs:
+  # ============================================================
+  # STAGE 1: ONE-WAY FLIGHTS (3 Parallel Batches: 100, 100, 50)
+  # ============================================================
+  scrape-oneway:
+    if: inputs.target != 'roundtrip'
+    name: "One-Way | ${{ matrix.desc }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - batch: 1
+            desc: "Batch 1 (Routes 1-100)"
+          - batch: 2
+            desc: "Batch 2 (Routes 101-200)"
+          - batch: 3
+            desc: "Batch 3 (Routes 201-250)"
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Python Dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install Playwright & Chromium
+        run: |
+          playwright install chromium
+          playwright install-deps chromium
+
+      - name: Scrape One-Way ${{ matrix.desc }}
+        env:
+          HEADLESS: "true"
+          SUPABASE_POOLER_HOST: ${{ secrets.SUPABASE_POOLER_HOST || 'aws-0-eu-west-1.pooler.supabase.com' }}
+          SUPABASE_PASSWORD: ${{ secrets.SUPABASE_PASSWORD || 'OlcvPogBrneuhYW7' }}
+          SUPABASE_ONE_WAY_USER: ${{ secrets.SUPABASE_ONE_WAY_USER || 'postgres.uopbpkiogtspjwiyiaxe' }}
+        run: |
+          python run_250_routes.py --batch ${{ matrix.batch }}
+
+  # ============================================================
+  # STAGE 2: ROUND-TRIP FLIGHTS (Runs after One-Way Completes)
+  # 3 Parallel Batches: 100, 100, 50
+  # ============================================================
+  scrape-roundtrip:
+    needs: [scrape-oneway]
+    if: always() && (inputs.target != 'oneway')
+    name: "Round-Trip | ${{ matrix.desc }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - batch: 1
+            desc: "Batch 1 (Routes 1-100)"
+          - batch: 2
+            desc: "Batch 2 (Routes 101-200)"
+          - batch: 3
+            desc: "Batch 3 (Routes 201-250)"
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Python Dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install Playwright & Chromium
+        run: |
+          playwright install chromium
+          playwright install-deps chromium
+
+      - name: Scrape Round-Trip ${{ matrix.desc }}
+        env:
+          HEADLESS: "true"
+          SUPABASE_POOLER_HOST: ${{ secrets.SUPABASE_POOLER_HOST || 'aws-0-eu-west-1.pooler.supabase.com' }}
+          SUPABASE_PASSWORD: ${{ secrets.SUPABASE_PASSWORD || 'OlcvPogBrneuhYW7' }}
+          SUPABASE_ROUND_TRIP_USER: ${{ secrets.SUPABASE_ROUND_TRIP_USER || 'postgres.afqmwnbuvsothamcbdpv' }}
+        run: |
+          python run_250_routes_round_trip.py --batch ${{ matrix.batch }} --days 14 --return-window 14
